@@ -11,12 +11,13 @@ from flask import Flask, request
 
 from balancer.balancer import DynamicBalancer
 from db.DatabaseModel import AIAppPriority, DBStatus, init_database
+from monitor.monitor_api import monitor_bp
 from utils.app_utils import adjust_oom_priority, callback_manager, fetch_all_apps, get_priority_value
 from utils.http_utils import RetCode, construct_response
 from utils.logger import logger
 
-
 app = Flask(__name__)
+app.register_blueprint(monitor_bp)
 
 CERT_FILE = './b_server.crt'
 KEY_FILE = './b_server.key'
@@ -88,6 +89,7 @@ def start_service():
         else:
             print(">>>> DynamicService 已经存在，跳过初始化 <<<<")
     return _service
+
 
 def _handle_signal(signum, frame):
     if _service:
@@ -716,6 +718,7 @@ def main():
 
     ssl_context = (CERT_FILE, KEY_FILE)
     app.run(host="127.0.0.1", port=9001, debug=False, use_reloader=False, ssl_context=ssl_context)
+
 
 if __name__ == "__main__":
     main()

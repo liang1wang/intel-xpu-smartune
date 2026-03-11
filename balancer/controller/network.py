@@ -9,7 +9,7 @@ import subprocess # nosec
 import time
 from utils.logger import logger
 from config.config import b_config
-from monitor.network import NetworkMonitor
+from monitor import NetworkMonitor
 from utils import app_utils
 
 

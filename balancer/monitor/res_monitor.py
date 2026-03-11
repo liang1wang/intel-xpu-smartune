@@ -16,7 +16,7 @@ from config.config import b_config
 from utils.app_utils import fetch_all_apps, get_cgroup_path_by_pid, get_pids_in_cgroup
 from utils.logger import logger
 
-from monitor.psi import PSIMonitor
+from monitor import PSIMonitor
 
 
 class ResourceMonitor:

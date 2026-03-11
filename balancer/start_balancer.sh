@@ -25,4 +25,13 @@ else
     fi
 fi
 
+cleanup() {
+    echo "Clean up..."
+    sudo pkill -f "BalanceService.py" 2>/dev/null
+    wait
+    echo "Service stopped."
+}
+
+trap cleanup INT TERM EXIT
+
 sudo -E python3 BalanceService.py

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
 from collections import OrderedDict
-from monitor.appIntercept import AppIntercept
+from monitor import AppIntercept
 
 from utils.logger import logger
 from utils import app_utils
