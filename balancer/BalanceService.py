@@ -13,7 +13,7 @@ from flask import Flask, request, Response, stream_with_context
 
 from balancer.balancer import DynamicBalancer
 from db.DatabaseModel import AIAppPriority, DBStatus, init_database
-from monitor.monitor_api import monitor_bp
+from monitor.monitor_api import monitor_bp, register_system_pressure_monitor
 from monitor.system_info import preload_static_info, shutdown_qmassa
 from utils.app_utils import adjust_oom_priority, callback_manager, fetch_all_apps, get_priority_value
 from utils.http_utils import RetCode, construct_response
@@ -36,6 +36,9 @@ class DynamicService:
 
     def __init__(self):
         self.balancer = DynamicBalancer()
+        # Share the controller's SystemPressureMonitor with the monitor API so that
+        # both use the same instance (including is_limited_app_dominant state).
+        register_system_pressure_monitor(self.balancer.controlManager.system_pressure_monitor)
         self.rebuild_controlled_map()
         self.secret_hash = self._generate_secret_hash()  # Generate and store the hash
         logger.info("Service secret hash generated.")

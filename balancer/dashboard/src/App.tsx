@@ -4,7 +4,6 @@ import {
   DashboardOutlined,
   AppstoreOutlined,
   NodeIndexOutlined,
-  AlertOutlined,
   ControlOutlined,
   LineChartOutlined,
   InfoCircleOutlined,
@@ -12,7 +11,6 @@ import {
 import SystemOverview from './components/SystemOverview'
 import AppResources from './components/AppResources'
 import ProcessResources from './components/ProcessResources'
-import PressureDashboard from './components/PressureDashboard'
 import AppManagement from './components/AppManagement'
 import HistoryDashboard from './components/HistoryDashboard'
 import About from './components/About'
@@ -58,41 +56,31 @@ export default function App() {
       key: '4',
       label: (
         <Space>
-          <AlertOutlined />
-          Pressure
-        </Space>
-      ),
-      children: <PressureDashboard active={activeTab === '4'} />,
-    },
-    {
-      key: '5',
-      label: (
-        <Space>
           <ControlOutlined />
           Balancer
         </Space>
       ),
-      children: <AppManagement active={activeTab === '5'} />,
+      children: <AppManagement active={activeTab === '4'} />,
     },
     {
-      key: '6',
+      key: '5',
       label: (
         <Space>
           <LineChartOutlined />
           History
         </Space>
       ),
-      children: <HistoryDashboard active={activeTab === '6'} />,
+      children: <HistoryDashboard active={activeTab === '5'} />,
     },
     {
-      key: '7',
+      key: '6',
       label: (
         <Space>
           <InfoCircleOutlined />
           About
         </Space>
       ),
-      children: <About active={activeTab === '7'} />,
+      children: <About active={activeTab === '6'} />,
     },
   ]
 

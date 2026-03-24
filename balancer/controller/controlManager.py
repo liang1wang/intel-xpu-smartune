@@ -30,8 +30,8 @@ class ControlManager:
         """ Set whether the limited app is dominant. """
         self.system_pressure_monitor.set_limited_app_dominant(is_dominant)
 
-    def get_current_pressure_level(self) -> tuple[str, bool]:
-        """ Get system pressure level and disk pressure status. """
+    def get_current_pressure_level(self) -> tuple:
+        """ Get system pressure level, score, disk pressure status, and PSI data. """
         return self.system_pressure_monitor.get_current_pressure_level()
 
     def update_network_pressure_level(self, network_data):

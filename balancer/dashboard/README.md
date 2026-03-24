@@ -1,4 +1,4 @@
-# Resource Balancer Dashboard
+# Intel XPU SmarTune Dashboard
 
 A Grafana-inspired dark-theme web UI for the Intel Multi-Task Resource Balancer.
 Built with **Vite + React 18 + TypeScript + Ant Design v5**.

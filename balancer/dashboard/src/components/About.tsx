@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Col, Descriptions, Row, Space, Spin, Typography } from 'antd'
-import { InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Descriptions, Row, Space, Spin, Typography, Timeline } from 'antd'
+import { InfoCircleOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import type { PackageInfo, StaticInfoData } from '../api/types'
 import { COLORS } from '../styles/theme'
 
-const { Text, Title } = Typography
+const { Text, Title, Paragraph } = Typography
 
 interface Props {
   active: boolean
@@ -165,9 +165,11 @@ function summarizeGpuNamesByCard(staticInfo?: StaticInfoData | null): string {
 function SectionCard({
   title,
   items,
+  descColumns = 1,
 }: {
   title: string
   items: Array<{ label: string; value: React.ReactNode }>
+  descColumns?: number
 }) {
   return (
     <Card
@@ -178,7 +180,7 @@ function SectionCard({
       <Text style={{ color: COLORS.text, fontSize: 13, fontWeight: 600 }}>{title}</Text>
       <Descriptions
         size="small"
-        column={1}
+        column={descColumns}
         style={{ marginTop: 8 }}
         labelStyle={{ color: COLORS.textMuted, fontSize: 12, width: 140 }}
         contentStyle={{ color: COLORS.text, fontSize: 12, wordBreak: 'break-word' }}
@@ -338,12 +340,135 @@ export default function About({ active }: Props) {
       ) : (
         <>
           <Text style={{ color: COLORS.textMuted, fontSize: 12, display: 'block', marginBottom: 8 }}>
+            Balancer Features
+          </Text>
+          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+            <Col span={24}>
+              <Card
+                className="perf-card perf-rise"
+                bodyStyle={{ padding: 16 }}
+              >
+                <Space align="center" style={{ marginBottom: 12 }}>
+                  <RobotOutlined style={{ color: COLORS.accent, fontSize: 16 }} />
+                  <Text style={{ color: COLORS.text, fontSize: 13, fontWeight: 600 }}>
+                    SmarTune 功能说明 (Feature Overview)
+                  </Text>
+                </Space>
+                <Timeline
+                  style={{ marginTop: 8 }}
+                  items={[
+                    {
+                      color: COLORS.green,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>资源管控</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            在系统资源紧张时，通过 cgroups v2 对占用最多的应用动态调整 CPU 配额、Memory上限 和 Disk I/O 权重，以及每块磁盘的读写吞吐量和 IOPS 限速，同时按压力等级切换 CPU 频率策略（节能/高性能），并在压力缓解后逐步恢复资源配额。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.accent,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>压力监测</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            基于 Linux PSI（Pressure Stall Information）实时采集 CPU、内存和 I/O 压力数据，计算综合评分并划分低/中/高/临界四个压力等级；同时通过 eBPF 拦截 execve 系统调用实时感知受控应用的启动与退出，并独立监控磁盘 I/O 利用率和系统 iowait。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.orange,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>优先级队列</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            当系统达到临界压力或磁盘 I/O 繁忙时，新应用的启动请求被暂停并写入最大优先级队列；待资源恢复后按优先级顺序自动拉起等待中的应用，支持手动取消队列中的待启动请求。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.green,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>应用保活</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            对 Critical 优先级的受控应用，减小其被系统 OOM Killer 回收的概率；同时持续监控关键应用的运行进程，确保其稳定运行。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.accent,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>网络I/O控制</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            通过 cgroup + iptables + tc/HTB 对受控应用实施出/入方向流量管控，按 Critical/High/Low/System 四级优先级分配带宽；基于滑动平均窗口实时计算网络压力等级，达到临界时依次限制低/高优先级类的带宽上限，压力下降后逐步回调恢复。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.green,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>GPU 实时监测</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            对每块 GPU 卡（iGPU/dGPU 自动区分）实时采集 gt0/gt1 频率（当前/实际/最大）、GPU 及封装功耗、各引擎（Render/Compute/Video Encode/Decode/Copy）使用率、VRAM 用量及频率降级原因；静态信息涵盖 GPU 名称、引擎列表、EU 数量、PCIe 速度/宽度及 PCI 地址。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.orange,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>NPU 实时监测</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            实时读取 NPU 利用率（%）、功耗（W）、温度（°C）、运行频率（MHz）、NoC 带宽（MiB/s）和内存占用；同时通过 /proc/[pid]/fdinfo 解析各进程的 NPU 内存占用，实现进程级 NPU 使用追踪。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.accent,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>系统信息采集</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            静态采集完整的硬件与软件环境信息：CPU 型号、P/E 核拓扑及频率范围；内存总量与 DDR 速率；磁盘设备列表与容量；网卡数量、主网卡及峰值带宽；每块 GPU 的名称、引擎、PCIe、频率范围及 EU 数量；NPU 的 PCI ID、驱动版本、固件版本及频率范围；操作系统版本、BIOS、内核及 GuC/HuC/NPU 固件、Mesa/OpenCL/Level Zero/Media 驱动版本。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.textMuted,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>手动控制</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            支持用户手动操作受控应用，包括调整优先级、取消排队启动、设置资源限额（CPU/内存/I/O）、恢复正常配额、保活以及删除应用等。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          <Text style={{ color: COLORS.textMuted, fontSize: 12, display: 'block', marginBottom: 8 }}>
             Software Configuration
           </Text>
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             {softwareSections.map((section) => (
-              <Col key={`soft-${section.title}`} xs={24} md={12}>
-                <SectionCard title={section.title} items={section.items} />
+              <Col key={`soft-${section.title}`} xs={24}>
+                <SectionCard title={section.title} items={section.items} descColumns={2} />
               </Col>
             ))}
           </Row>
@@ -351,7 +476,7 @@ export default function About({ active }: Props) {
           <Text style={{ color: COLORS.textMuted, fontSize: 12, display: 'block', marginBottom: 8 }}>
             Hardware Configuration
           </Text>
-          <Row gutter={[16, 16]}>
+          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             {hardwareSections.map((section) => (
               <Col key={`hw-${section.title}`} xs={24} lg={8}>
                 <SectionCard title={section.title} items={section.items} />

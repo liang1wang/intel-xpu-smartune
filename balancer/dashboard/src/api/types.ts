@@ -15,17 +15,27 @@ export interface DiskDeviceData {
 
 export interface DiskData {
   disk_io: Record<string, DiskDeviceData>
+  is_stressed?: boolean
+  stressed_disks?: string[]
+  iowait?: number
 }
 
 export interface NetworkData {
   rx: number
   tx: number
+  rx_level?: string
+  tx_level?: string
 }
 
 export interface PressureData {
   cpu: number
   memory: number
   io: number
+  level?: string
+  score?: number
+  is_disk_io_stressed?: boolean
+  network_rx?: number
+  network_tx?: number
 }
 
 export interface ProcessInfo {
@@ -58,6 +68,40 @@ export interface AppInfo {
 export interface Consumer {
   process: ProcessInfo
   app: AppInfo
+}
+
+export interface DiskIoProcessInfo {
+  pid: number
+  name: string
+  cmdline: string
+  score: number
+  io_read_rate: number
+  io_write_rate: number
+}
+
+export interface DiskIoConsumer {
+  process: DiskIoProcessInfo
+  app: AppInfo | null
+}
+
+export interface TopDiskIoConsumersData {
+  consumers: DiskIoConsumer[]
+}
+
+export interface ProcessEntry {
+  pid: number
+  name: string
+  username: string
+  cpu_percent: number
+  memory_percent: number
+  mem_rss_kb: number
+  status: string
+  cmdline: string
+}
+
+export interface ProcessListData {
+  count: number
+  processes: ProcessEntry[]
 }
 
 export interface TopConsumersData {

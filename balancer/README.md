@@ -1,7 +1,8 @@
-# Multitask Resource Balancing Service (MRB)
-This is multitask resource balancing service (MRB) for AI NAS, which is designed to dynamically adjust resource allocation
-for various Apps(AI) based on their priority and system pressure.
-It uses cgroups v2 to manage resources like CPU, memory, and I/O.
+# SmarTune – Multi-task Resource Balancer & System Monitor (MRB)
+SmarTune (MRB) is a system-level service for AI NAS that combines real-time hardware monitoring
+(CPU, GPU, NPU, memory, disk, and network) with dynamic multi-task resource balancing.
+It intercepts application launches via eBPF, evaluates system pressure via Linux PSI,
+and uses cgroups v2 to control CPU, memory, and I/O resources per app based on priority.
 
 # Solution:
 
@@ -17,47 +18,98 @@ It uses cgroups v2 to manage resources like CPU, memory, and I/O.
 
 
 # Key features:
-    1. monitor resources
-    2. adjust resources dynamically
-    3. support cgroups v2
-    4. support multiple resource types (CPU, memory, I/O)
-    5. priority-based app balancing(priority queue)
+    1. PSI-based pressure monitoring (CPU/memory/I/O) with four levels: low/medium/high/critical
+    2. cgroups v2 resource control: CPU quota, memory.high, I/O weight (io.weight), and per-disk
+       read/write throughput and IOPS throttling (io.max: rbps/wbps/riops/wiops) per app
+    3. CPU frequency governor switching (powersave/performance) based on pressure level
+    4. eBPF (via BCC) execve interception for real-time app launch/exit detection
+    5. Max-priority queue for deferred app launches under resource contention
+    6. Keep-alive for Critical apps via oom_score_adj tuning
+    7. tc/HTB + iptables + cgroup network traffic shaping with four priority classes
+    8. Disk I/O stress detection and top disk consumer throttling
+    9. GPU real-time monitoring via qmassa: per-card gt0/gt1 frequency, power, engine utilization
+       (Render/Compute/Video Encode/Decode/Copy), VRAM usage, and throttle reason detection
+    10. NPU real-time monitoring via Intel PMT telemetry: utilization, power, temperature,
+        frequency, NOC bandwidth, memory utilization; per-process NPU tracking via fdinfo
+    11. Static hardware/software inventory: CPU topology (P/E-core), GPU static config, NPU
+        device info, OS/BIOS/kernel/driver versions (GuC, HuC, NPU FW, Mesa, OpenCL, Level Zero)
+    12. REST API and Web UI for manual app management (priority, limits, restore, delete)
 
 
 # Directory Structure:
 ```
-    mtb/
-    ├── BalanceService.py        # Server for managing resource balancing and provide FastApi.
-    ├── balancer/                # App interaction and balancing logic and priority queue
-    ├── config/                  # Configuration loader
-    ├── controller/              # System pressure and Adjustment components
-    ├── db/                      # Database of app information
-    ├── monitor/                 # App monitoring components
-    ├── test/                    # Some feature tests
-    ├── utils/                   # Some utility functions
-    ├── web/                     # Streamlit web interface (app management)
-    ├── dashboard/               # React/TypeScript Grafana-style dashboard (5-tab UI)
-    └── requirements.txt      # Dependencies
+    multi-task-resource-balancer/
+    ├── BalanceService.py        # Flask REST API server; resource-balancing entry point
+    ├── start_balancer.sh        # Convenience script to start the balancer service
+    ├── balancer/                # Core balancing logic: DynamicBalancer, MaxPriorityQueue,
+    │                            #   app-intercept loop, network controller integration
+    ├── config/                  # config.yaml (thresholds, weights, app list) and config loader
+    ├── controller/              # Resource controllers: CPU quota, memory, Disk I/O,
+    │                            #   network (tc/HTB), CPU governor, PSI reader
+    ├── db/                      # Peewee ORM database model for controlled app records
+    ├── monitor/                 # System monitoring components:
+    │   ├── psi.py               #   Linux PSI reader
+    │   ├── pressure.py          #   Pressure scoring and level classification
+    │   ├── res_monitor.py       #   CPU/memory/disk/network resource usage and top-process finder
+    │   ├── network.py           #   Network traffic sampling and pressure calculation
+    │   ├── cgroup.py            #   cgroup path resolution and monitoring
+    │   ├── appIntercept.py      #   eBPF-based app launch/exit detection (BCC)
+    │   ├── bpf_event.c          #   eBPF C program for execve syscall interception
+    │   ├── system_info.py       #   Static/dynamic hardware & software info collection
+    │   │                        #   (CPU, GPU, NPU, memory, disk, network, driver versions)
+    │   ├── intel_npu_smi.py     #   Intel NPU monitoring via PMT telemetry and fdinfo
+    │   └── monitor_api.py       #   Flask Blueprint exposing /monitor/* REST endpoints
+    ├── tools/
+    │   └── qmassa               #   Intel GPU telemetry tool (real-time GPU metrics via sysfs)
+    ├── test/                    # Unit / integration tests and feature test scripts
+    ├── utils/                   # Shared utilities: logger, app_utils, http_utils
+    ├── web/                     # Streamlit web UI for app management
+    ├── dashboard/               # React/TypeScript dashboard (6-tab UI: Performance,
+    │                            #   App Resources, Process Resources, Balancer, History, About)
+    └── requirements.txt         # Python dependencies
 ```
 
-# System Control:
+# System Control & Resource Balancing:
 The system control and monitoring module is designed to balance multiple AI apps running concurrently on NAS.
 Its core mechanisms are as follows:
 ```
-1. Control: Restrict uncontrolled or low-priority apps that consume the most resources
-    when system resources are strained, freeing up resources to ensure stable operation of critical apps.
-2. Monitor: Monitor system resources in real time, generate resource ratings, and
-    manage the startup/shutdown status of controlled apps.
-3. Priority Queue: Automatically suspend the launch of non-critical apps when resources are limited,
-    add their launch requests to a priority queue, and trigger automatic startup
-    in priority order once resources are sufficient.
-4. Keep-Alive: Critical controlled apps are automatically set to keep-alive mode upon launch
-    to guarantee continuous, stable operation.
-5. Web UI: Support manual management of controlled apps, including priority adjustment, launch cancellation,
-    resource limit configuration, restoration, keep-alive setup and app deletion.
+1. Control: When system resources are strained, dynamically restrict the top resource-consuming apps'
+    CPU quota, memory.high, I/O weight (io.weight), and per-disk read/write throughput and IOPS
+    limits (io.max: rbps/wbps/riops/wiops) via cgroups v2, while switching the CPU frequency governor
+    (powersave/performance) according to pressure level. Resources are gradually restored once pressure drops.
+2. Monitor: Collect CPU, memory, and I/O Pressure Stall Information (PSI) in real time, compute a
+    composite pressure score, and map it to four levels (low/medium/high/critical). Intercept controlled
+    app launches and exits via eBPF (execve hook). Independently detect disk I/O stress and identify
+    the top disk I/O consumers.
+3. Priority Queue: When pressure reaches critical level or disk I/O is busy, suspend pending app launches
+    and insert them into a max-priority queue. Once resources recover, automatically launch queued apps in
+    priority order. Manual cancellation of queued launches is also supported.
+4. Keep-Alive: For Critical-priority controlled apps, lower the process oom_score_adj to reduce the
+    probability of OOM kill, and continuously monitor their running processes to ensure stable operation.
+5. Web UI / API: Support manual management of controlled apps via the Web UI or REST API, including
+    priority adjustment, cancellation of queued launches, resource limit configuration (CPU/memory/I/O),
+    quota restoration, OOM score setup, and app deletion.
 Key Words:
     Balancer, Controlled Apps, Monitoring, Priority-Queue-based App Management, Top Resource-Consuming App Processes,
     System Pressure Calculation, CPU/Memory/Disk and Network IO Usage Status...
+```
+
+# GPU & NPU Real-time Monitoring:
+The hardware telemetry module provides real-time per-device metrics for Intel GPU and NPU.
+```
+GPU (via qmassa):
+1. Collects real-time per-card metrics for each GPU (iGPU and dGPU distinguished automatically):
+    gt0/gt1 frequency (current/actual/max), GPU and package power consumption,
+    per-engine utilization (Render, Compute, Video Encode/Decode, Copy),
+    VRAM usage (total/used), and throttle reason detection.
+2. Static info includes GPU names (via lspci), engine list, EU count, PCIe speed/width,
+    and PCI addresses per card.
+
+NPU (via Intel PMT telemetry):
+1. Reads NPU telemetry registers in real time: utilization (%), power (W), temperature (°C),
+    operating frequency (MHz), NoC memory bandwidth (MiB/s), and on-chip memory utilization.
+2. Supports Intel MTL / ARL / LNL / PTL platforms via platform-specific PMT GUID detection.
+3. Per-process NPU usage tracking via /proc/[pid]/fdinfo (intel_vpu driver, drm-resident-memory).
 ```
 
 # Network Control & Monitor Design

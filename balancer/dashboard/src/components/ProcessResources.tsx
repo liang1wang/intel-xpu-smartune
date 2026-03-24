@@ -9,35 +9,28 @@ import {
   Progress,
   Space,
   Tooltip,
+  Input,
 } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { COLORS } from '../styles/theme'
 import { api } from '../api/client'
-import type { Consumer } from '../api/types'
+import type { ProcessEntry } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
 
 const { Text, Title } = Typography
-
-interface ProcessRow {
-  key: string
-  pid: number
-  name: string
-  cmdline: string
-  cpu_avg: number
-  memory_rss: number
-  io_read_rate: number
-  score: number
-  app_name: string
-}
 
 interface Props {
   active: boolean
 }
 
-function formatBytes(kb: number): string {
-  if (kb < 1024) return `${kb.toFixed(0)} KB/s`
-  return `${(kb / 1024).toFixed(1)} MB/s`
+const STATUS_COLOR: Record<string, string> = {
+  running: COLORS.green,
+  sleeping: COLORS.textMuted,
+  disk_sleep: COLORS.orange,
+  stopped: COLORS.red,
+  zombie: COLORS.red,
+  idle: COLORS.textMuted,
 }
 
 function formatMemory(kb: number): string {
@@ -47,30 +40,18 @@ function formatMemory(kb: number): string {
 }
 
 export default function ProcessResources({ active }: Props) {
-  const [rows, setRows] = useState<ProcessRow[]>([])
+  const [allRows, setAllRows] = useState<ProcessEntry[]>([])
+  const [filter, setFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [totalCount, setTotalCount] = useState(0)
 
   const fetchData = useCallback(async () => {
     try {
-      const data = await api.getTopConsumers()
-      const processRows: ProcessRow[] = data.consumers.map((c: Consumer, idx: number) => {
-        const p = c.process
-        const app = c.app
-        return {
-          key: `${p?.pid ?? idx}-${idx}`,
-          pid: p?.pid ?? 0,
-          name: p?.name ?? 'Unknown',
-          cmdline: p?.cmdline ?? '',
-          cpu_avg: p?.cpu_avg ?? 0,
-          memory_rss: p?.memory_rss ?? 0,
-          io_read_rate: p?.io_read_rate ?? 0,
-          score: p?.score ?? app?.score ?? 0,
-          app_name: app?.app_name ?? '',
-        }
-      })
-      setRows(processRows.sort((a, b) => b.score - a.score))
+      const data = await api.getProcesses()
+      setAllRows(data.processes)
+      setTotalCount(data.count)
       setError(null)
       setLastUpdated(new Date())
     } catch (e: unknown) {
@@ -82,7 +63,18 @@ export default function ProcessResources({ active }: Props) {
 
   usePolling(fetchData, 5000, active)
 
-  const columns: ColumnsType<ProcessRow> = [
+  const filterLower = filter.toLowerCase()
+  const rows = filterLower
+    ? allRows.filter(
+        (p) =>
+          p.name.toLowerCase().includes(filterLower) ||
+          p.cmdline.toLowerCase().includes(filterLower) ||
+          String(p.pid).includes(filterLower) ||
+          (p.username || '').toLowerCase().includes(filterLower),
+      )
+    : allRows
+
+  const columns: ColumnsType<ProcessEntry> = [
     {
       title: 'PID',
       dataIndex: 'pid',
@@ -90,13 +82,11 @@ export default function ProcessResources({ active }: Props) {
       width: 70,
       sorter: (a, b) => a.pid - b.pid,
       render: (v: number) => (
-        <Text style={{ color: COLORS.textMuted, fontFamily: 'monospace', fontSize: 11 }}>
-          {v || '—'}
-        </Text>
+        <Text style={{ color: COLORS.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{v}</Text>
       ),
     },
     {
-      title: 'Process Name',
+      title: 'Name',
       dataIndex: 'name',
       key: 'name',
       width: 150,
@@ -106,12 +96,77 @@ export default function ProcessResources({ active }: Props) {
       ),
     },
     {
-      title: 'App',
-      dataIndex: 'app_name',
-      key: 'app_name',
-      width: 130,
-      render: (v: string) =>
-        v ? <Tag style={{ fontSize: 11 }} color="blue">{v}</Tag> : <Text style={{ color: COLORS.textMuted }}>—</Text>,
+      title: 'User',
+      dataIndex: 'username',
+      key: 'username',
+      width: 90,
+      sorter: (a, b) => (a.username || '').localeCompare(b.username || ''),
+      render: (v: string) => (
+        <Text style={{ color: COLORS.textMuted, fontSize: 11 }}>{v || '—'}</Text>
+      ),
+    },
+    {
+      title: 'CPU %',
+      dataIndex: 'cpu_percent',
+      key: 'cpu_percent',
+      width: 110,
+      defaultSortOrder: 'descend',
+      sorter: (a, b) => a.cpu_percent - b.cpu_percent,
+      render: (v: number) => {
+        const color = v > 80 ? COLORS.red : v > 50 ? COLORS.orange : COLORS.green
+        return (
+          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+            <Text style={{ color, fontSize: 11 }}>{v.toFixed(1)}%</Text>
+            <Progress
+              percent={Math.min(v, 100)}
+              showInfo={false}
+              strokeColor={color}
+              trailColor={COLORS.border}
+              size="small"
+            />
+          </Space>
+        )
+      },
+    },
+    {
+      title: 'Mem %',
+      dataIndex: 'memory_percent',
+      key: 'memory_percent',
+      width: 90,
+      sorter: (a, b) => a.memory_percent - b.memory_percent,
+      render: (v: number) => {
+        const color = v > 10 ? COLORS.orange : COLORS.text
+        return <Text style={{ color, fontSize: 12 }}>{v.toFixed(1)}%</Text>
+      },
+    },
+    {
+      title: 'RSS',
+      dataIndex: 'mem_rss_kb',
+      key: 'mem_rss_kb',
+      width: 100,
+      sorter: (a, b) => a.mem_rss_kb - b.mem_rss_kb,
+      render: (v: number) => (
+        <Text style={{ color: COLORS.text, fontSize: 12 }}>{formatMemory(v)}</Text>
+      ),
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      sorter: (a, b) => a.status.localeCompare(b.status),
+      render: (v: string) => (
+        <Tag
+          style={{
+            color: STATUS_COLOR[v] ?? COLORS.textMuted,
+            borderColor: STATUS_COLOR[v] ?? COLORS.border,
+            background: `${STATUS_COLOR[v] ?? COLORS.textMuted}15`,
+            fontSize: 11,
+          }}
+        >
+          {v}
+        </Tag>
+      ),
     },
     {
       title: 'Command',
@@ -125,76 +180,17 @@ export default function ProcessResources({ active }: Props) {
               color: COLORS.textMuted,
               fontFamily: 'monospace',
               fontSize: 11,
-              maxWidth: 240,
               display: 'inline-block',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
+              maxWidth: 260,
             }}
           >
             {v || '—'}
           </Text>
         </Tooltip>
       ),
-    },
-    {
-      title: 'CPU Avg %',
-      dataIndex: 'cpu_avg',
-      key: 'cpu_avg',
-      width: 120,
-      sorter: (a, b) => a.cpu_avg - b.cpu_avg,
-      render: (v: number) => {
-        const pct = v * 100
-        const color = pct > 80 ? COLORS.red : pct > 50 ? COLORS.orange : COLORS.green
-        return (
-          <Space direction="vertical" size={2} style={{ width: '100%' }}>
-            <Text style={{ color, fontSize: 11 }}>{pct.toFixed(1)}%</Text>
-            <Progress
-              percent={Math.min(pct, 100)}
-              showInfo={false}
-              strokeColor={color}
-              trailColor={COLORS.border}
-              size="small"
-            />
-          </Space>
-        )
-      },
-    },
-    {
-      title: 'Memory RSS',
-      dataIndex: 'memory_rss',
-      key: 'memory_rss',
-      width: 110,
-      sorter: (a, b) => a.memory_rss - b.memory_rss,
-      render: (v: number) => (
-        <Text style={{ color: COLORS.text, fontSize: 12 }}>{formatMemory(v)}</Text>
-      ),
-    },
-    {
-      title: 'IO Read Rate',
-      dataIndex: 'io_read_rate',
-      key: 'io_read_rate',
-      width: 120,
-      sorter: (a, b) => a.io_read_rate - b.io_read_rate,
-      render: (v: number) => (
-        <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>{formatBytes(v)}</Text>
-      ),
-    },
-    {
-      title: 'Score',
-      dataIndex: 'score',
-      key: 'score',
-      width: 90,
-      defaultSortOrder: 'descend',
-      sorter: (a, b) => a.score - b.score,
-      render: (v: number) => {
-        const color = v > 80 ? COLORS.red : v > 50 ? COLORS.orange : v > 20 ? COLORS.yellow : COLORS.green
-        return (
-          <Tag style={{ color, borderColor: color, background: `${color}15`, fontSize: 12, fontWeight: 600 }}>
-            {v.toFixed(1)}
-          </Tag>
-        )
-      },
     },
   ]
 
@@ -213,13 +209,29 @@ export default function ProcessResources({ active }: Props) {
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            marginBottom: 16,
+            marginBottom: 12,
           }}
         >
-          <Title level={5} style={{ color: COLORS.text, margin: 0 }}>
-            Process Resource Usage
-          </Title>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Space>
+            <Title level={5} style={{ color: COLORS.text, margin: 0 }}>
+              All Processes
+            </Title>
+            {totalCount > 0 && (
+              <Tag style={{ color: COLORS.textMuted, borderColor: COLORS.border, background: 'transparent' }}>
+                {rows.length}/{totalCount}
+              </Tag>
+            )}
+          </Space>
+          <Space>
+            <Input
+              size="small"
+              placeholder="Filter by name / PID / user / cmd"
+              prefix={<SearchOutlined style={{ color: COLORS.textMuted }} />}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              allowClear
+              style={{ width: 220, background: COLORS.headerBg, borderColor: COLORS.border, color: COLORS.text }}
+            />
             {lastUpdated && (
               <Text style={{ color: COLORS.textMuted, fontSize: 11 }}>
                 <ReloadOutlined style={{ marginRight: 4 }} />
@@ -231,7 +243,7 @@ export default function ProcessResources({ active }: Props) {
               color={COLORS.green}
               text={<Text style={{ color: COLORS.textMuted, fontSize: 11 }}>Auto-refresh 5s</Text>}
             />
-          </div>
+          </Space>
         </div>
 
         {error && (
@@ -246,11 +258,11 @@ export default function ProcessResources({ active }: Props) {
 
         <Table
           columns={columns}
-          dataSource={rows}
+          dataSource={rows.map((p) => ({ ...p, key: String(p.pid) }))}
           loading={loading}
           size="small"
           scroll={{ x: 900 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
+          pagination={{ pageSize: 30, showSizeChanger: true, pageSizeOptions: ['20', '30', '50', '100'] }}
           rowClassName={(_, idx) => (idx % 2 === 1 ? 'table-row-alt' : '')}
           locale={{
             emptyText: (

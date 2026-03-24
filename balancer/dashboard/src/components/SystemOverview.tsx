@@ -982,21 +982,23 @@ function PressurePointerGauge({
   valuePct,
   subtitle,
   description,
+  levelLabel,
 }: {
   title: string
   valuePct: number | null
   subtitle?: string
   description?: string
+  levelLabel?: string
 }) {
   const hasValue = isNumber(valuePct)
   const pct = hasValue ? Math.max(0, Math.min(valuePct, 100)) : 0
   const normalized = pct / 100
   const color = getPressureColor(normalized)
   const pointerColor = COLORS.text
-  const label = hasValue ? getPressureLabel(normalized) : '0%'
+  const label = levelLabel ?? (hasValue ? getPressureLabel(normalized) : '0%')
   const needleAngleDeg = 180 - (pct * 180) / 100
   const needleAngleRad = (needleAngleDeg * Math.PI) / 180
-  const needleLength = 23
+  const needleLength = 18
   const needleX2 = 50 + needleLength * Math.cos(needleAngleRad)
   const needleY2 = 64 - needleLength * Math.sin(needleAngleRad)
   const gaugeData = [{ value: pct, fill: color }]
@@ -1887,6 +1889,9 @@ export default function SystemOverview({ active }: Props) {
         'pressure:cpu': normalizePercent(data.pressure?.cpu),
         'pressure:memory': normalizePercent(data.pressure?.memory),
         'pressure:io': normalizePercent(data.pressure?.io),
+        'pressure:score': isNumber(data.pressure?.score) ? data.pressure.score! * 100 : null,
+        'pressure:network:rx': isNumber(data.pressure?.network_rx) ? data.pressure.network_rx! * 100 : null,
+        'pressure:network:tx': isNumber(data.pressure?.network_tx) ? data.pressure.network_tx! * 100 : null,
         'npu:availability': data.npu.npu_smi.available ? 100 : 0,
         'cpu:p': normalizePercent(data.cpu.p_core_usage),
         'cpu:e': normalizePercent(data.cpu.e_core_usage),
@@ -1905,7 +1910,9 @@ export default function SystemOverview({ active }: Props) {
       }
 
       const pressureValues = [updates['pressure:cpu'], updates['pressure:memory'], updates['pressure:io']].filter(isNumber)
-      updates['pressure:peak'] = pressureValues.length ? Math.max(...pressureValues) : null
+      updates['pressure:peak'] = isNumber(updates['pressure:score'])
+        ? updates['pressure:score']
+        : pressureValues.length ? Math.max(...pressureValues) : null
 
       data.cpu.per_core_usage.forEach((value, index) => {
         updates[`cpu:core:${index}`] = normalizePercent(value)
@@ -2205,12 +2212,25 @@ export default function SystemOverview({ active }: Props) {
   const cpuUsagePct = normalizePercent(dynamicInfo?.cpu.usage_total ?? null)
   const memoryUsagePct = normalizePercent(dynamicInfo?.memory.usage_percent ?? null)
 
-  const psiSystemPressurePct = isNumber(pressureCpu) && isNumber(pressureMemory) ? (pressureCpu + pressureMemory) / 2 : null
-  const usageSystemPressurePct = isNumber(cpuUsagePct) && isNumber(memoryUsagePct) ? (cpuUsagePct + memoryUsagePct) / 2 : null
-  const systemPressurePct = isNumber(psiSystemPressurePct) && psiSystemPressurePct > 0 ? psiSystemPressurePct : usageSystemPressurePct
+  // System pressure: use the weighted composite score from SystemPressureMonitor when available
+  const pressureScore = isNumber(dynamicInfo?.pressure?.score) ? (dynamicInfo.pressure.score as number) * 100 : null
+  const pressureLevel = dynamicInfo?.pressure?.level ?? null
+  const fallbackSystemPressure = isNumber(cpuUsagePct) && isNumber(memoryUsagePct)
+    ? (cpuUsagePct + memoryUsagePct) / 2
+    : null
+  const systemPressurePct = pressureScore ?? fallbackSystemPressure
 
-  const diskPressurePct = isNumber(pressureIo) && pressureIo > 0 ? pressureIo : maxDiskUtil
-  const networkPressurePct = networkUtilMax
+  // Disk IO: use is_disk_io_stressed data
+  const diskIsStressed = dynamicInfo?.disk?.is_stressed ?? false
+  const diskIoWait = isNumber(dynamicInfo?.disk?.iowait) ? (dynamicInfo.disk.iowait as number) : null
+  const diskStressedList = dynamicInfo?.disk?.stressed_disks ?? []
+
+  // Network pressure: use NetworkMonitor pressure fractions (0-1) when available
+  const networkRxPressure = isNumber(dynamicInfo?.pressure?.network_rx) ? (dynamicInfo.pressure.network_rx as number) * 100 : null
+  const networkTxPressure = isNumber(dynamicInfo?.pressure?.network_tx) ? (dynamicInfo.pressure.network_tx as number) * 100 : null
+  const networkPressurePct = (isNumber(networkRxPressure) || isNumber(networkTxPressure))
+    ? Math.max(networkRxPressure ?? 0, networkTxPressure ?? 0)
+    : networkUtilMax
 
   const npuParsed = useMemo(() => parseNpuRaw(dynamicInfo?.npu.npu_smi.raw), [dynamicInfo?.npu.npu_smi.raw])
   const npuUtilValue = useMemo(() => {
@@ -2351,27 +2371,43 @@ export default function SystemOverview({ active }: Props) {
           </Space>
         </div>
         <Row gutter={[16, 12]}>
+          {/* Disk IO Pressure: arc gauge with max disk utilization; stress info in subtitle */}
+          <Col xs={24} md={8}>
+            <PressurePointerGauge
+              title="Disk IO Pressure"
+              valuePct={maxDiskUtil}
+              levelLabel={diskIsStressed ? 'STRESSED' : isNumber(maxDiskUtil) ? undefined : 'NO DATA'}
+              subtitle={[
+                diskIsStressed ? '⚠ Stressed' : 'Normal',
+                isNumber(diskIoWait) ? `iowait: ${diskIoWait.toFixed(1)}%` : null,
+                diskStressedList.length > 0 ? diskStressedList.join(', ') : null,
+              ].filter(Boolean).join(' | ')}
+              description="Max disk utilization across all devices"
+            />
+          </Col>
+
+          {/* System Pressure (middle): weighted composite score from SystemPressureMonitor */}
           <Col xs={24} md={8}>
             <PressurePointerGauge
               title="System Pressure"
               valuePct={systemPressurePct}
-              subtitle={`CPU: ${formatPercent(pressureCpu, 0)} | Mem: ${formatPercent(pressureMemory, 0)}`}
-              description="Combined CPU + Memory pressure"
+              subtitle={pressureLevel
+                ? `Level: ${pressureLevel.toUpperCase()} | Score: ${isNumber(pressureScore) ? (pressureScore / 100).toFixed(2) : 'N/A'}`
+                : `CPU PSI: ${formatPercent(pressureCpu, 0)} | Mem PSI: ${formatPercent(pressureMemory, 0)}`}
+              description="Weighted composite score (PSI × resource usage)"
             />
           </Col>
-          <Col xs={24} md={8}>
-            <PressurePointerGauge
-              title="Disk IO Pressure"
-              valuePct={diskPressurePct}
-              subtitle={`IO: ${formatPercent(pressureIo, 0)}`}
-              description="Disk I/O saturation"
-            />
-          </Col>
+
+          {/* Network IO Pressure: fractions from NetworkMonitor */}
           <Col xs={24} md={8}>
             <PressurePointerGauge
               title="Network IO Pressure"
               valuePct={networkPressurePct}
-              subtitle={isNumber(rxNetworkUtil) || isNumber(txNetworkUtil) ? `RX: ${formatPercent(rxNetworkUtil, 0)} | TX: ${formatPercent(txNetworkUtil, 0)}` : undefined}
+              subtitle={isNumber(networkRxPressure) || isNumber(networkTxPressure)
+                ? `RX: ${formatPercent(networkRxPressure, 0)} | TX: ${formatPercent(networkTxPressure, 0)}`
+                : isNumber(rxNetworkUtil) || isNumber(txNetworkUtil)
+                  ? `RX: ${formatPercent(rxNetworkUtil, 0)} | TX: ${formatPercent(txNetworkUtil, 0)}`
+                  : undefined}
               description="Network bandwidth utilization"
             />
           </Col>

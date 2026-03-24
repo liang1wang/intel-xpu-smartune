@@ -180,7 +180,7 @@ class DynamicBalancer:
                 # 采样 ingress 流量
                 last_network_sample_time = current_time
                 network_data = self.network_controller.network.get_current_pressure()
-                tx_pressure, rx_pressure = self.controlManager.update_network_pressure_level(network_data)
+                tx_pressure, rx_pressure, *_ = self.controlManager.update_network_pressure_level(network_data)
                 tx_total_bw = self.network_controller.total_bw * network_data['tx']
                 rx_total_bw = self.network_controller.total_bw * network_data['rx']
                 logger.debug(
@@ -205,9 +205,9 @@ class DynamicBalancer:
                 # 当队列不为空时立即处理，为空时每10s检查一次
                 if not self.app_priority_queue.empty() or (current_time - last_check_time) >= idle_check_interval:
                     if policy == "separated":
-                        pressure, is_disk_io_stressed = self.controlManager.get_current_pressure_level()
+                        pressure, _, is_disk_io_stressed, *__ = self.controlManager.get_current_pressure_level()
                     else:  # policy == "combined"
-                        pressure, _ = self.controlManager.get_current_pressure_level()
+                        pressure, *_ = self.controlManager.get_current_pressure_level()
                         is_disk_io_stressed = False
 
                     last_check_time = current_time
