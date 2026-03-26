@@ -27,7 +27,7 @@ export default function App() {
       label: (
         <Space>
           <DashboardOutlined />
-          Performance
+          Monitor
         </Space>
       ),
       children: <SystemOverview active={activeTab === '1'} />,

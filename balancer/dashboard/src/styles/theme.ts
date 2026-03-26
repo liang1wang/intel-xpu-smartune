@@ -59,15 +59,15 @@ export const darkTheme: ThemeConfig = {
 }
 
 export function getPressureColor(value: number): string {
-  if (value < 0.3) return COLORS.green
-  if (value < 0.6) return COLORS.yellow
-  if (value < 0.8) return COLORS.orange
+  if (value < 0.6) return COLORS.green
+  if (value < 0.8) return COLORS.yellow
+  if (value < 1.0) return COLORS.orange
   return COLORS.red
 }
 
 export function getPressureLabel(value: number): string {
-  if (value < 0.3) return 'LOW'
-  if (value < 0.6) return 'MEDIUM'
-  if (value < 0.8) return 'HIGH'
+  if (value < 0.6) return 'LOW'
+  if (value < 0.8) return 'MEDIUM'
+  if (value < 1.0) return 'HIGH'
   return 'CRITICAL'
 }

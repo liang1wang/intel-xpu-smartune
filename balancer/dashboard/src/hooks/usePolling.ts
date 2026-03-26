@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-export function usePolling(callback: () => void, intervalMs: number, enabled = true) {
+export function usePolling(callback: () => void | Promise<void>, intervalMs: number, enabled = true) {
   const savedCallback = useRef(callback)
 
   useEffect(() => {
@@ -9,8 +9,26 @@ export function usePolling(callback: () => void, intervalMs: number, enabled = t
 
   useEffect(() => {
     if (!enabled) return
-    savedCallback.current()
-    const id = setInterval(() => savedCallback.current(), intervalMs)
-    return () => clearInterval(id)
+    let cancelled = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    const run = async () => {
+      if (cancelled) return
+      try {
+        await savedCallback.current()
+      } catch {
+        // Errors are expected to be handled by the callback itself
+      }
+      if (!cancelled) {
+        timeoutId = setTimeout(run, intervalMs)
+      }
+    }
+
+    run()
+
+    return () => {
+      cancelled = true
+      clearTimeout(timeoutId)
+    }
   }, [intervalMs, enabled])
 }

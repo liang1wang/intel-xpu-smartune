@@ -340,7 +340,7 @@ export default function About({ active }: Props) {
       ) : (
         <>
           <Text style={{ color: COLORS.textMuted, fontSize: 12, display: 'block', marginBottom: 8 }}>
-            Balancer Features
+            Features
           </Text>
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col span={24}>
@@ -351,7 +351,7 @@ export default function About({ active }: Props) {
                 <Space align="center" style={{ marginBottom: 12 }}>
                   <RobotOutlined style={{ color: COLORS.accent, fontSize: 16 }} />
                   <Text style={{ color: COLORS.text, fontSize: 13, fontWeight: 600 }}>
-                    SmarTune 功能说明 (Feature Overview)
+                    SmarTune 功能说明
                   </Text>
                 </Space>
                 <Timeline
@@ -363,7 +363,7 @@ export default function About({ active }: Props) {
                         <div>
                           <Text style={{ color: COLORS.text, fontWeight: 500 }}>资源管控</Text>
                           <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
-                            在系统资源紧张时，通过 cgroups v2 对占用最多的应用动态调整 CPU 配额、Memory上限 和 Disk I/O 权重，以及每块磁盘的读写吞吐量和 IOPS 限速，同时按压力等级切换 CPU 频率策略（节能/高性能），并在压力缓解后逐步恢复资源配额。
+                            在系统资源紧张时，通过 cgroups v2 对占用最多的应用动态限制 CPU、内存和磁盘 I/O 的资源使用，同时按压力等级切换功耗模式，并在压力缓解后逐步恢复资源配额。
                           </Paragraph>
                         </div>
                       ),
@@ -397,6 +397,17 @@ export default function About({ active }: Props) {
                           <Text style={{ color: COLORS.text, fontWeight: 500 }}>应用保活</Text>
                           <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
                             对 Critical 优先级的受控应用，减小其被系统 OOM Killer 回收的概率；同时持续监控关键应用的运行进程，确保其稳定运行。
+                          </Paragraph>
+                        </div>
+                      ),
+                    },
+                    {
+                      color: COLORS.orange,
+                      children: (
+                        <div>
+                          <Text style={{ color: COLORS.text, fontWeight: 500 }}>磁盘I/O控制</Text>
+                          <Paragraph style={{ color: COLORS.textMuted, margin: '4px 0 0', fontSize: 12 }}>
+                            通过 cgroups v2 限制占用磁盘 I/O 资源过多的应用，按优先级分配读写带宽与 IOPS 配额，在磁盘 I/O 压力消退后逐步恢复限额。
                           </Paragraph>
                         </div>
                       ),

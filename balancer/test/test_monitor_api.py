@@ -75,6 +75,8 @@ def main():
     _test_endpoint("/pressure")
     _test_endpoint("/summary")
     _test_endpoint("/top_consumers")
+    _test_endpoint("/app_resource_stats")
+    _test_endpoint("/app_disk_io_stats")
 
     print(f"\n{'=' * 60}")
     print("All monitor API tests completed.")

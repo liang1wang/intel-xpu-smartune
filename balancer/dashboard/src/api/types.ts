@@ -88,6 +88,39 @@ export interface TopDiskIoConsumersData {
   consumers: DiskIoConsumer[]
 }
 
+export interface AppResourceEntry {
+  app_id: string
+  app_name: string
+  pid: number
+  process_name: string
+  cmdline: string
+  cpu_usage: number       // fraction of total CPU capacity (0-1)
+  memory_mb: number       // resident memory in MB
+  io_read_rate: number    // MB/s
+  io_write_rate: number   // MB/s
+  score: number
+}
+
+export interface AppResourceStatsData {
+  apps: AppResourceEntry[]
+}
+
+export interface AppDiskIoEntry {
+  pid: number
+  name: string
+  app_name: string
+  cmdline: string
+  io_read_rate: number    // MB/s
+  io_write_rate: number   // MB/s
+  io_read_iops: number    // ops/s
+  io_write_iops: number   // ops/s
+  score: number
+}
+
+export interface AppDiskIoStatsData {
+  apps: AppDiskIoEntry[]
+}
+
 export interface ProcessEntry {
   pid: number
   name: string

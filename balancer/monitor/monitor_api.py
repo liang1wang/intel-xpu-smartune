@@ -371,6 +371,99 @@ def get_top_disk_io_consumers():
         )
 
 
+@monitor_bp.route('/app_resource_stats', methods=['GET'])
+def get_app_resource_stats():
+    """
+    Return per-application CPU/memory resource usage for the App Resources dashboard tab.
+
+    Unlike /top_consumers (which returns only the top-1 process and applies system-pressure
+    threshold filtering), this endpoint returns the top N applications by combined CPU/memory
+    score without any threshold gate, making it suitable for general resource display.
+
+    Query params:
+        n (int, optional): Number of top apps to return. Default: 10.
+
+    Response data:
+        {
+            "apps": [
+                {
+                    "app_id": <str>,
+                    "app_name": <str>,
+                    "pid": <int>,
+                    "process_name": <str>,
+                    "cmdline": <str>,
+                    "cpu_usage": <float>,      # fraction of total CPU capacity (0-1)
+                    "memory_mb": <float>,      # resident memory in MB
+                    "io_read_rate": <float>,   # disk read rate in MB/s
+                    "score": <float>
+                },
+                ...
+            ]
+        }
+    """
+    try:
+        n = int(request.args.get('n', 10))
+        monitor = _get_resource_monitor()
+        apps = monitor.get_app_resource_stats(n=n)
+        return construct_response(
+            data={'apps': apps},
+            retmsg="Successfully retrieved app resource stats"
+        )
+    except Exception as e:
+        logger.error(f"get_app_resource_stats failed: {str(e)}")
+        return construct_response(
+            data={},
+            retcode=RetCode.EXCEPTION_ERROR,
+            retmsg=str(e)
+        )
+
+
+@monitor_bp.route('/app_disk_io_stats', methods=['GET'])
+def get_app_disk_io_stats():
+    """
+    Return per-application disk I/O usage for the App Resources dashboard tab.
+
+    Unlike /top_disk_io_consumers (which returns only the top-1 process), this endpoint
+    returns the top N applications by disk I/O score, suitable for general display.
+
+    Query params:
+        n (int, optional): Number of top apps to return. Default: 10.
+
+    Response data:
+        {
+            "apps": [
+                {
+                    "pid": <int>,
+                    "name": <str>,          # dominant process name (highest IO contributor in cgroup)
+                    "app_name": <str>,      # human-readable app/cgroup name
+                    "cmdline": <str>,
+                    "io_read_rate": <float>,    # read throughput in MB/s
+                    "io_write_rate": <float>,   # write throughput in MB/s
+                    "io_read_iops": <float>,    # read operations per second
+                    "io_write_iops": <float>,   # write operations per second
+                    "score": <float>
+                },
+                ...
+            ]
+        }
+    """
+    try:
+        n = int(request.args.get('n', 10))
+        monitor = _get_resource_monitor()
+        apps = monitor.get_app_disk_io_stats(n=n)
+        return construct_response(
+            data={'apps': apps},
+            retmsg="Successfully retrieved app disk I/O stats"
+        )
+    except Exception as e:
+        logger.error(f"get_app_disk_io_stats failed: {str(e)}")
+        return construct_response(
+            data={},
+            retcode=RetCode.EXCEPTION_ERROR,
+            retmsg=str(e)
+        )
+
+
 @monitor_bp.route('/processes', methods=['GET'])
 def get_processes():
     """

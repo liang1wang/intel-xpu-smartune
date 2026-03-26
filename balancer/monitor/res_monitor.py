@@ -46,7 +46,7 @@ class ResourceMonitor:
         dynamic_weights = self._adjust_weights_by_pressure(psi_data)
 
         candidate_procs = self._get_candidate_processes(
-            num=3,  # 候选，可能占用资源最高的app
+            num=max(n * 3, 9),  # 候选进程数，确保有足够候选以覆盖至少 n 个不同cgroup
             samples=samples,
             interval=interval,
             dynamic_weights=dynamic_weights
@@ -65,19 +65,34 @@ class ResourceMonitor:
             'cpu_total': 0,  # 所有进程 CPU 使用率总和（%）
             'mem_percent_total': 0,  # 所有进程内存占用百分比总和（%）
             'mem_rss_total': 0,  # 所有进程 RSS 内存总和（字节）
-            'io_read_total': 0,  # 所有进程 IO 读取总和（字节）
-            'io_write_total': 0,  # 所有进程 IO 写入总和（字节）
+            'io_read_total': 0,    # 所有进程 IO 读取字节 delta 总和
+            'io_write_total': 0,   # 所有进程 IO 写入字节 delta 总和
+            'io_read_count_total': 0,   # 所有进程 IO 读取次数 delta 总和 (for IOPS)
+            'io_write_count_total': 0,  # 所有进程 IO 写入次数 delta 总和 (for IOPS)
             'count': 0,
             'pids': set(),
             'names': set(),
-            'cmdlines': set()
+            'cmdlines': set(),
+            # Dominant process: the single process contributing the most to the mode's metric.
+            # In default mode this is the process with the highest CPU%; in io mode it is the
+            # process with the highest IO delta.  We track this so the UI shows "stress" instead
+            # of an unrelated process like "vte-2.91" that happens to share the same cgroup.
+            'dominant_name': '',
+            'dominant_cmdline': '',
+            'dominant_metric': 0.0,  # highest individual contribution seen so far
         })
 
         # 缓存每个 cgroup 的 pid 列表和 Process 对象
         cgroup_pids = {}
         pid_process_map = {}
+        # IO rate is computed as a delta between two snapshots taken io_sample_interval apart.
+        # Using cumulative io_counters directly would give total-lifetime-bytes / elapsed which
+        # produces huge, incorrect values (e.g. hundreds of MB/s for an idle Firefox).
+        io_sample_interval = 0.5  # seconds between the two IO counter snapshots
+        # Each entry: (read_bytes, write_bytes, read_count, write_count) at t0
+        pid_io_start: dict[int, tuple[int, int, int, int]] = {}
 
-        # 第一次遍历：初始化 CPU 计时器，并缓存数据，default模式
+        # 第一次遍历：初始化 CPU 计时器 + 记录初始 IO 计数（t0）
         for cgroup_path in cgroup_paths:
             pids_in_cgroup = get_pids_in_cgroup(cgroup_path)
             cgroup_pids[cgroup_path] = pids_in_cgroup
@@ -86,14 +101,22 @@ class ResourceMonitor:
                     p = psutil.Process(pid)
                     if mode == 'default':
                         p.cpu_percent(interval=None)  # 仅default模式需要初始化CPU计时器
+                    try:
+                        io = p.io_counters()
+                        pid_io_start[pid] = (io.read_bytes, io.write_bytes,
+                                             io.read_count, io.write_count)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                        pid_io_start[pid] = (0, 0, 0, 0)
                     pid_process_map[pid] = p
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
-        if mode == 'default':
-            time.sleep(0.1)  # 仅default模式需要等待CPU计时
+        # Sleep covers both CPU and IO measurement intervals
+        t0 = time.time()
+        time.sleep(io_sample_interval)
+        elapsed = time.time() - t0
 
-        # 第二次遍历：直接使用缓存的数据
+        # 第二次遍历：读取最终计数，计算 delta
         for cgroup_path, pids_in_cgroup in cgroup_pids.items():
             for pid in pids_in_cgroup:
                 if pid not in pid_process_map:
@@ -104,18 +127,44 @@ class ResourceMonitor:
                         cpu_percent = p.cpu_percent(interval=None) if mode == 'default' else 0
                         mem_percent = p.memory_percent() if mode == 'default' else 0
                         mem_info = p.memory_info()
-                        io_counters = p.io_counters() if p.io_counters() else None
+                        try:
+                            io_end = p.io_counters()
+                            io_start = pid_io_start.get(pid, (0, 0, 0, 0))
+                            io_read_delta = max(0, io_end.read_bytes - io_start[0])
+                            io_write_delta = max(0, io_end.write_bytes - io_start[1])
+                            io_read_count_delta = max(0, io_end.read_count - io_start[2])
+                            io_write_count_delta = max(0, io_end.write_count - io_start[3])
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                            io_read_delta = io_write_delta = 0
+                            io_read_count_delta = io_write_count_delta = 0
+                        try:
+                            proc_name = p.name()
+                            proc_cmdline = ' '.join(p.cmdline()) or proc_name
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            proc_name = ''
+                            proc_cmdline = ''
 
                     cgroup_data[cgroup_path]['cpu_total'] += cpu_percent
                     cgroup_data[cgroup_path]['mem_percent_total'] += mem_percent
                     cgroup_data[cgroup_path]['mem_rss_total'] += mem_info.rss
-                    if io_counters:
-                        cgroup_data[cgroup_path]['io_read_total'] += io_counters.read_bytes
-                        cgroup_data[cgroup_path]['io_write_total'] += io_counters.write_bytes
+                    cgroup_data[cgroup_path]['io_read_total'] += io_read_delta
+                    cgroup_data[cgroup_path]['io_write_total'] += io_write_delta
+                    cgroup_data[cgroup_path]['io_read_count_total'] += io_read_count_delta
+                    cgroup_data[cgroup_path]['io_write_count_total'] += io_write_count_delta
                     cgroup_data[cgroup_path]['count'] += 1
                     cgroup_data[cgroup_path]['pids'].add(pid)
-                    cgroup_data[cgroup_path]['names'].add(p.name())
-                    cgroup_data[cgroup_path]['cmdlines'].add(' '.join(p.cmdline()) or p.name())
+                    if proc_name:
+                        cgroup_data[cgroup_path]['names'].add(proc_name)
+                        cgroup_data[cgroup_path]['cmdlines'].add(proc_cmdline)
+
+                    # Track the single process contributing most to this cgroup's metric so
+                    # the UI shows a meaningful name (e.g. "stress") rather than whichever
+                    # process name Python's set iteration happens to return first (e.g. "vte").
+                    metric = cpu_percent if mode == 'default' else (io_read_delta + io_write_delta)
+                    if metric > cgroup_data[cgroup_path]['dominant_metric'] and proc_name:
+                        cgroup_data[cgroup_path]['dominant_metric'] = metric
+                        cgroup_data[cgroup_path]['dominant_name'] = proc_name
+                        cgroup_data[cgroup_path]['dominant_cmdline'] = proc_cmdline
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
@@ -123,10 +172,15 @@ class ResourceMonitor:
         processes = []
         for cgroup_path, data in cgroup_data.items():
             if data['count'] > 0:
+                # IO rates: delta bytes / elapsed seconds → MB/s
+                io_read_rate_mb = data['io_read_total'] / elapsed / (1024 ** 2)
+                io_write_rate_mb = data['io_write_total'] / elapsed / (1024 ** 2)
+                # IO operations per second (IOPS)
+                io_read_iops = data['io_read_count_total'] / elapsed
+                io_write_iops = data['io_write_count_total'] / elapsed
                 if mode == 'io':
-                    # IO模式：按读写总量排序（MB/s）
-                    io_total_mb = (data['io_read_total'] + data['io_write_total']) / (1024 ** 2)
-                    score = io_total_mb  # 直接使用IO总量作为评分
+                    # IO模式：按实时读写速率之和排序
+                    score = io_read_rate_mb + io_write_rate_mb
                 else:
                     # Default模式：CPU+内存
                     cpu_total_normalized = data['cpu_total'] / self.cpu_cores
@@ -135,6 +189,12 @@ class ResourceMonitor:
                             dynamic_weights['memory'] * min(data['mem_percent_total'], 100)
                     )
 
+                # dominant_name is the process with the highest individual contribution;
+                # fall back to the alphabetically-first name from the set if no dominant
+                # was recorded, to ensure consistent output across calls.
+                dominant_name = data['dominant_name'] or min(data['names'], default='unknown')
+                dominant_cmdline = data['dominant_cmdline'] or min(data['cmdlines'], default='')
+
                 processes.append({
                     'pids': list(data['pids']),
                     'cgroup': cgroup_path,
@@ -142,10 +202,14 @@ class ResourceMonitor:
                     'cpu_avg': round(data['cpu_total'] / self.cpu_cores, 1) if mode == 'default' else 0,
                     'mem_avg': round(data['mem_percent_total'], 1) if mode == 'default' else 0,
                     'mem_rss': round(data['mem_rss_total'] / (1024 ** 3), 2),
-                    'io_read_rate': round(data['io_read_total'] / (samples * interval) / (1024 ** 2), 2),
-                    'io_write_rate': round(data['io_write_total'] / (samples * interval) / (1024 ** 2), 2),
+                    'io_read_rate': round(io_read_rate_mb, 4),
+                    'io_write_rate': round(io_write_rate_mb, 4),
+                    'io_read_iops': round(io_read_iops, 1),
+                    'io_write_iops': round(io_write_iops, 1),
                     'names': list(data['names']),
-                    'cmdlines': list(data['cmdlines'])
+                    'cmdlines': list(data['cmdlines']),
+                    'dominant_name': dominant_name,
+                    'dominant_cmdline': dominant_cmdline,
                 })
 
         # logger.debug(f"Aggregated processes by cgroup: {processes}")
@@ -153,9 +217,15 @@ class ResourceMonitor:
         return sorted(processes, key=lambda x: x['score'], reverse=True)[:n]
 
     def _get_candidate_processes(self, num, samples, interval, dynamic_weights):
-        """采样获取候选进程（计算score筛选top进程，但只返回pid和name）"""
+        """采样获取候选进程（计算score筛选top进程，但只返回pid和name）
+
+        使用 per-cgroup 多样性筛选：对每个采样周期内的进程按评分排序后，限制同一
+        cgroup 贡献的候选数（max_per_cgroup），防止高并发应用（如 stress -c 8）的
+        多个同 cgroup 工作进程占满所有候选名额，从而保证候选集覆盖足够多的不同 cgroup。
+        """
         candidates = []
         seen_pids = set()  # 用于记录已经处理过的PID
+        max_per_cgroup = 2  # 每个 cgroup 最多贡献的候选进程数
 
         for _ in range(samples):
             current_sample = []
@@ -187,9 +257,24 @@ class ResourceMonitor:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
-            # 按score降序排序，取前num个进程
-            current_sample_sorted = sorted(current_sample, key=lambda x: -x['score'])[:num]
-            candidates.extend(current_sample_sorted)
+            # Select top-num candidates with per-cgroup diversity cap.
+            # Sort by score desc then greedily pick processes, capping each cgroup at
+            # max_per_cgroup slots.  This prevents one heavy multi-process app (e.g.
+            # `stress -c 8`) from monopolising all candidate slots with workers that all
+            # share the same cgroup, which would leave _get_top_processes with only one
+            # unique cgroup and return just a single result instead of the requested n.
+            current_sample_sorted = sorted(current_sample, key=lambda x: -x['score'])
+            selected: list = []
+            cgroup_count: dict = {}
+            for proc in current_sample_sorted:
+                cgroup = get_cgroup_path_by_pid(proc['pid']) or str(proc['pid'])
+                cnt = cgroup_count.get(cgroup, 0)
+                if cnt < max_per_cgroup:
+                    selected.append(proc)
+                    cgroup_count[cgroup] = cnt + 1
+                    if len(selected) >= num:
+                        break
+            candidates.extend(selected)
             if _ != samples - 1:
                 time.sleep(interval)
 
@@ -236,38 +321,52 @@ class ResourceMonitor:
             logger.warning(f"Failed to find systemd unit: {str(e)}")
         return None
 
+    def _extract_readable_app_name(self, scope_name: str) -> str:
+        """Convert a systemd scope/service/slice name to a human-readable app name.
+
+        Examples:
+          snap.firefox.firefox-0e025d0b.scope  -> Firefox
+          gnome-remote-desktop.service         -> Gnome Remote Desktop
+          org.gnome.Shell@wayland.service      -> Gnome Shell
+          session-c20.scope                    -> Session C20
+          app-org.gnome.Terminal.slice         -> Gnome Terminal
+        """
+        name = scope_name
+        # Remove trailing .scope / .service / .slice
+        name = re.sub(r'\.(scope|service|slice)$', '', name)
+        # Strip leading app- prefix (used in app.slice children, e.g. app-org.gnome.Terminal)
+        name = re.sub(r'^app-', '', name)
+        # Snap apps: snap.<appname>.<appname>-<uuid> -> appname
+        snap_match = re.match(r'^snap\.([^.]+)', name)
+        if snap_match:
+            return snap_match.group(1).replace('-', ' ').title()
+        # Strip @instance suffix (e.g. @wayland, @x11)
+        name = re.sub(r'@[^@]+$', '', name)
+        # Reverse-domain notation (org.gnome.Shell): take last 2 meaningful parts
+        if '.' in name:
+            parts = [p for p in name.split('.') if p]
+            name = ' '.join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+        return name.replace('-', ' ').replace('_', ' ').title()
+
     def try_match_app(self, process_info):
         """尝试匹配桌面应用或systemd scope"""
-        # logger.debug(f"try_match_app process_info: {process_info}")
-        # 1. 先判断process_info中是否有cgroup字段，如果有直接拿出来按照正则表达式获取到名字
         cgroup = process_info.get('cgroup')
-        if cgroup:
-            scope_name = cgroup.rstrip('/').split('/')[-1]
-            logger.debug(f"Extracted scope name from cgroup: {scope_name}")
-            return {
-                'type': 'cgroup',
-                'id': scope_name,
-                'name': f"CGroup: {scope_name}"
-            }
 
-        # 2. 尝试通过systemd-cgls查找scope或者service
-        if 'pids' in process_info and process_info['pids']:
-            unit = self._find_systemd_unit(process_info['pids'][0])  # the first PID
-            if unit:
-                logger.debug(f"try_match_app Matched systemd unit: {unit}")
-                return {
-                    'type': 'systemd',
-                    'id': unit,
-                    'name': f"Systemd cgroup: {unit}"
-                }
-
-        # 3. 尝试匹配桌面应用，最终还需要拿到cgroup路径
+        # 1. Try to match a registered desktop app by process name or exe path
         if self.desktop_apps:
+            exe = process_info.get('exe', '')
+            # Support both aggregated format (names: set/list) and single-process format (name: str)
+            names = process_info.get('names')
+            if names is None:
+                proc_name = process_info.get('name', '')
+                names = [proc_name] if proc_name else []
+            elif isinstance(names, set):
+                names = list(names)
+
             for app_id, app in self.desktop_apps.items():
                 try:
-                    # 检查应用的可执行文件是否匹配
-                    cmd = app["cmdline"]
-                    if cmd and process_info['exe'] and process_info['exe'] in cmd:
+                    app_cmd = app.get("cmdline", "")
+                    if exe and app_cmd and exe in app_cmd:
                         logger.debug(f"try_match_app matched desktop app by cmdline: {app_id}")
                         return {
                             'type': 'desktop',
@@ -275,17 +374,65 @@ class ResourceMonitor:
                             'name': app["display_name"]
                         }
 
-                    # 检查应用名称是否匹配进程名
-                    if app["name"].lower() in process_info['name'].lower():
-                        logger.debug(f"try_match_app matched desktop app by name: {app_id}")
-                        return {
-                            'type': 'desktop',
-                            'id': app_id,
-                            'name': app["display_name"]
-                        }
+                    app_name_lower = app.get("name", "").lower()
+                    for proc_name in names:
+                        if app_name_lower and proc_name and app_name_lower in proc_name.lower():
+                            logger.debug(f"try_match_app matched desktop app by name: {app_id}")
+                            return {
+                                'type': 'desktop',
+                                'id': app_id,
+                                'name': app["display_name"]
+                            }
                 except Exception as e:
                     logger.warning(f"Catch error: {e}")
                     continue
+
+        # 2. Fallback: extract a readable name from the cgroup path
+        if cgroup:
+            path_parts = cgroup.rstrip('/').split('/')
+            scope_name = path_parts[-1]
+
+            # vte-spawn-*.scope is the scope created by GNOME Terminal (via VTE) for child
+            # processes.  The scope itself has no useful name; look one level up to the parent
+            # slice (e.g. app-org.gnome.Terminal.slice) to get the terminal app name, then
+            # append the dominant process name so the user sees "Gnome Terminal - stress" rather
+            # than "Vte Spawn <uuid>".
+            if re.match(r'^vte-spawn-', scope_name):
+                parent_slice = path_parts[-2] if len(path_parts) >= 2 else ''
+                terminal_name = self._extract_readable_app_name(parent_slice) if parent_slice else 'Terminal'
+                dominant_name = process_info.get('dominant_name', '')
+                display_name = f"{terminal_name} - {dominant_name}" if dominant_name else terminal_name
+                logger.debug(f"vte-spawn scope: parent={parent_slice!r} dominant={dominant_name!r} -> {display_name!r}")
+                return {
+                    'type': 'cgroup',
+                    'id': scope_name,
+                    'name': display_name,
+                }
+
+            logger.debug(f"Extracted scope name from cgroup: {scope_name}")
+            return {
+                'type': 'cgroup',
+                'id': scope_name,
+                'name': self._extract_readable_app_name(scope_name)
+            }
+
+        # 3. Try systemd-cgls lookup (for processes without cgroup info)
+        pids = process_info.get('pids')
+        if pids is None:
+            pid = process_info.get('pid')
+            pids = [pid] if pid else []
+        elif isinstance(pids, set):
+            pids = list(pids)
+
+        if pids:
+            unit = self._find_systemd_unit(pids[0])
+            if unit:
+                logger.debug(f"try_match_app Matched systemd unit: {unit}")
+                return {
+                    'type': 'systemd',
+                    'id': unit,
+                    'name': self._extract_readable_app_name(unit)
+                }
 
         return None
 
@@ -346,6 +493,74 @@ class ResourceMonitor:
                     'io_write_rate': process['io_write_rate']
                 },
                 'app': app_info
+            })
+
+        return results
+
+    def get_app_resource_stats(self, n=10):
+        """获取App Resources页面所需的各应用CPU/内存使用数据（不含阈值过滤）
+
+        与 get_top_resource_consumers 不同，此方法：
+          - 返回前 n 个应用（默认10个）而非仅返回top-1
+          - 不检查系统压力阈值，始终返回当前资源使用情况
+          - 适用于Dashboard "App Resources" 页面的数据展示
+        """
+        results = []
+        processes = self._get_top_processes(n=n)
+        logger.debug(f"App resource stats processes: {processes}")
+
+        for process in processes:
+            process_name = process.get('dominant_name') or next(iter(process['names']), 'unknown')
+            process_cmdline = process.get('dominant_cmdline') or next(iter(process['cmdlines']), 'unknown')
+
+            app_match = self.try_match_app(process)
+            app_id = app_match['id'] if app_match else process_name
+            app_name = app_match['name'] if app_match else process_name
+
+            results.append({
+                'app_id': app_id,
+                'app_name': app_name,
+                'pid': next(iter(process['pids']), None),
+                'process_name': process_name,
+                'cmdline': process_cmdline,
+                'cpu_usage': round(process['cpu_avg'] / 100, 4),       # normalize to 0-1
+                'memory_mb': round(process['mem_rss'] * 1024, 1),      # GB -> MB
+                'io_read_rate': process['io_read_rate'],                # MB/s
+                'io_write_rate': process['io_write_rate'],              # MB/s
+                'score': round(process['score'], 3),
+            })
+
+        return results
+
+    def get_app_disk_io_stats(self, n=10):
+        """获取App Resources页面所需的各应用Disk I/O使用数据（不含阈值过滤）
+
+        与 get_top_disk_io_consumers 不同，此方法：
+          - 返回前 n 个应用（默认10个）而非仅返回top-1
+          - 适用于Dashboard "App Resources" 页面的磁盘I/O数据展示
+        """
+        results = []
+        processes = self._get_top_processes(n=n, mode="io")
+        logger.debug(f"App disk I/O stats processes: {processes}")
+
+        for process in processes:
+            process_name = process.get('dominant_name') or next(iter(process['names']), 'unknown')
+            process_cmdline = process.get('dominant_cmdline') or next(iter(process['cmdlines']), 'unknown')
+
+            app_match = self.try_match_app(process)
+            # Use resolved app name as display name; fall back to dominant process name
+            app_name = app_match['name'] if app_match else process_name
+
+            results.append({
+                'pid': next(iter(process['pids']), None),
+                'name': process_name,
+                'app_name': app_name,
+                'cmdline': process_cmdline,
+                'io_read_rate': process['io_read_rate'],                # MB/s
+                'io_write_rate': process['io_write_rate'],              # MB/s
+                'io_read_iops': process['io_read_iops'],                # ops/s
+                'io_write_iops': process['io_write_iops'],              # ops/s
+                'score': round(process['score'], 3),
             })
 
         return results
