@@ -1923,22 +1923,10 @@ def _build_network_history(network: Dict[str, Any]) -> Dict[str, Any]:
     if rx_bytes is not None or tx_bytes is not None:
         total_mbps = ((rx_bytes or 0.0) + (tx_bytes or 0.0)) * 8.0 / 1_000_000.0
 
-    static_info = _get_network_static_info() or {}
-    peak_mbps = _to_float(static_info.get("network_peak_mbps"))
-    if peak_mbps is not None and peak_mbps <= 0:
-        peak_mbps = None
-
-    # Legacy fallback when NIC peak is unavailable.
-    bw_kbit = _to_float(getattr(b_config, "network_bandwidth_kbit", None))
-    fallback_mbps = (bw_kbit / 1000.0) if bw_kbit and bw_kbit > 0 else None
-    max_mbps = peak_mbps if peak_mbps is not None else fallback_mbps
-
-    utilization_percent = None
-    if total_mbps is not None and max_mbps and max_mbps > 0:
-        utilization_percent = max(0.0, min((total_mbps / max_mbps) * 100.0, 100.0))
-
     # Per-NIC detail for history charts (utilization + bandwidth)
+    static_info = _get_network_static_info() or {}
     per_nic: Dict[str, Dict[str, Optional[float]]] = {}
+    all_nic_utils: list[float] = []
     interfaces = network.get("interfaces") if isinstance(network, dict) else None
     if isinstance(interfaces, dict):
         valid_nics = static_info.get("valid_nics") or []
@@ -1961,6 +1949,10 @@ def _build_network_history(network: Dict[str, Any]) -> Dict[str, Any]:
                 "rx_mbps": round(rx_mbps, 3),
                 "tx_mbps": round(tx_mbps, 3),
             }
+            all_nic_utils.append(nic_util)
+
+    # Derive utilization_percent from per_nic (max across NICs), consistent with SystemOverview
+    utilization_percent = max(all_nic_utils) if all_nic_utils else None
 
     return {
         "total": {

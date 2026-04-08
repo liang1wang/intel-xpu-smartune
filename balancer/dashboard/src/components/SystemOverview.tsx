@@ -1615,9 +1615,10 @@ function GpuDeviceCard({
     { key: `${device.id}-gt1-act`, label: 'GT1', data: gt1FreqSeries, stroke: '#e07b54' },
   ]
 
+  const pkgLabel = device.label === 'iGPU' ? 'Pkg' : 'Card'
   const powerSeries = [
     { key: `${device.id}-power-gpu`, label: 'GPU', data: gpuPowerSeries, stroke: PERF_COLORS.cpu },
-    { key: `${device.id}-power-pkg`, label: 'Card', data: pkgPowerSeries, stroke: PERF_COLORS.pressure },
+    { key: `${device.id}-power-pkg`, label: pkgLabel, data: pkgPowerSeries, stroke: PERF_COLORS.pressure },
   ]
 
   const engineSeries = enginesToShow.map((engine) => ({
@@ -1793,7 +1794,7 @@ function GpuDeviceCard({
                   <LineChart data={data} margin={{ top: 2, right: 44, left: 0, bottom: 0 }}>
                     <CartesianGrid stroke={`${COLORS.border}55`} strokeDasharray="3 3" />
                     <XAxis dataKey="i" hide />
-                    <YAxis yAxisId="pct" domain={[0, 100]} tick={{ fill: COLORS.textMuted, fontSize: 10 }} tickFormatter={(v) => `${v}%`} width={32} />
+                    <YAxis yAxisId="pct" domain={[0, 100]} tick={{ fill: COLORS.textMuted, fontSize: 10 }} tickFormatter={(v) => `${v}%`} width={36} />
                     <YAxis yAxisId="mhz" orientation="right" tick={{ fill: COLORS.textMuted, fontSize: 10 }} tickFormatter={(v) => `${v}`} width={40} />
                     <Tooltip
                       contentStyle={{ background: COLORS.panelBg, border: `1px solid ${COLORS.border}`, color: COLORS.text, fontSize: 11 }}
@@ -2168,7 +2169,7 @@ export default function SystemOverview({ active }: Props) {
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} Card Power`,
+        label: `${device.label} ${device.label === 'iGPU' ? 'Pkg' : 'Card'} Power`,
         value: formatMetric(device.powerPkg, 'W', 2),
         source: 'dynamic' as DataSourceKind,
       },
@@ -2740,7 +2741,7 @@ export default function SystemOverview({ active }: Props) {
                   source: 'dynamic',
                 },
                 { label: 'GPU Power', value: formatMetric(device.powerGpu, 'W', 2), source: 'dynamic' },
-                { label: 'Card Power', value: formatMetric(device.powerPkg, 'W', 2), source: 'dynamic' },
+                { label: device.label === 'iGPU' ? 'Pkg Power' : 'Card Power', value: formatMetric(device.powerPkg, 'W', 2), source: 'dynamic' },
                 {
                   label: device.label === 'iGPU' ? 'Sys Mem' : 'VRAM',
                   value: formatPercent(device.vramUsage),

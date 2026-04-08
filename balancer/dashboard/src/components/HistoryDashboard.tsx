@@ -207,7 +207,8 @@ function getPressurePeak(dynamic: DynamicInfoData | null): number | null {
 function getNetworkUsage(dynamic: DynamicInfoData | null): number | null {
   if (!dynamic) return null
   const network = dynamic.network as DynamicInfoData['network'] & HistoryNetworkExtra
-  const utilization = normalizePercent(network?.utilization_percent)
+  // utilization_percent is already a percentage (0-100) from backend; use toNumber to avoid normalizePercent ×100
+  const utilization = toNumber(network?.utilization_percent)
   if (utilization != null) return utilization
   // Fallback: NetworkMonitor rx/tx fractions (0-1) stored in the pressure section.
   const p = dynamic.pressure as { network_rx?: unknown; network_tx?: unknown } | undefined
@@ -253,7 +254,7 @@ function buildPressureTrendPoints(items: HistorySnapshotItem[]): PressureTrendPo
       ts,
       systemPressure: getPressurePeak(dynamic),
       diskPressure: normalizePercent(dynamic?.pressure?.io),
-      networkPressure: normalizePercent(getNetworkUsage(dynamic)),
+      networkPressure: getNetworkUsage(dynamic),
     }
   })
 }
@@ -327,7 +328,8 @@ function buildNetworkTrendPoints(items: HistorySnapshotItem[]): { points: Networ
       for (const [name, val] of Object.entries(perNic)) {
         nicNameSet.add(name)
         if (val && typeof val === 'object') {
-          point[`${name}:util`] = normalizePercent(val.util ?? (val.rx != null || val.tx != null ? Math.max(val.rx ?? 0, val.tx ?? 0) : null))
+          // per_nic.util is already a percentage (0-100) from backend; skip normalizePercent to avoid ×100 for values ≤1
+          point[`${name}:util`] = toNumber(val.util) ?? normalizePercent(val.rx != null || val.tx != null ? Math.max(val.rx ?? 0, val.tx ?? 0) : null)
           point[`${name}:rx`] = toNumber(val.rx_mbps) ?? null
           point[`${name}:tx`] = toNumber(val.tx_mbps) ?? null
         } else {
@@ -338,8 +340,8 @@ function buildNetworkTrendPoints(items: HistorySnapshotItem[]): { points: Networ
         }
       }
     } else {
-      // Fallback: use aggregated utilization_percent as single line
-      const aggUtil = normalizePercent((network as DynamicInfoData['network'] & HistoryNetworkExtra)?.utilization_percent)
+      // Fallback: use aggregated utilization_percent as single line (already 0-100 from backend)
+      const aggUtil = toNumber((network as DynamicInfoData['network'] & HistoryNetworkExtra)?.utilization_percent)
       if (aggUtil != null) {
         nicNameSet.add('total')
         point['total:util'] = aggUtil
@@ -480,9 +482,10 @@ function GpuHistoryCard({ series }: { series: GpuTrendSeries }) {
     { key: 'gt1Freq', name: 'GT1 MHz', color: COLORS.textMuted, dasharray: '4 4', yAxisId: 'freq' },
   ]
 
+  const pkgPowerLabel = series.isIntegrated ? 'Pkg Power W' : 'Card Power W'
   const powerLines: Array<{ key: string; name: string; color: string; dasharray?: string }> = [
     { key: 'gpuPower', name: 'GPU Power W', color: COLORS.accent },
-    { key: 'pkgPower', name: 'Card Power W', color: COLORS.orange, dasharray: '5 3' },
+    { key: 'pkgPower', name: pkgPowerLabel, color: COLORS.orange, dasharray: '5 3' },
   ]
 
   return (
