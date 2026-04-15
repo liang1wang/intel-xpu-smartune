@@ -131,7 +131,6 @@ interface HistoryNpuSmiExtra {
   } | null
 }
 
-const LIMIT_OPTIONS = [50, 100, 200, 500]
 const RANGE_PRESET_OPTIONS: Array<{ label: string; value: RangePreset }> = [
   { label: '5m', value: '5m' },
   { label: '15m', value: '15m' },
@@ -277,6 +276,15 @@ function tooltipFmt(digits = 2) {
 }
 const tooltipFmt2 = tooltipFmt(2)
 
+/** Format a numeric hover panel value with its unit string */
+function formatHoverValue(value: unknown, unit: string): string {
+  const n = typeof value === 'number' ? value : parseFloat(String(value))
+  if (Number.isNaN(n)) return '—'
+  if (unit === '%') return `${n.toFixed(1)}%`
+  if (unit === '°C') return `${n.toFixed(1)}°C`
+  return `${n.toFixed(1)} ${unit}`
+}
+
 function isNumber(value: number | null): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -355,12 +363,24 @@ function buildPressureTrendPoints(items: HistorySnapshotItem[]): PressureTrendPo
   return [...items].reverse().map((item) => {
     const dynamic = toDynamicData(item)
     const { ts, label } = buildTimestamp(item)
+    // System pressure: use persisted composite score (0-1 → 0-100%); fall back to
+    // PSI peak for older snapshots that predate the score field being stored.
+    const scoreRaw = (dynamic?.pressure as Record<string, unknown> | undefined)?.score
+    const systemPressure = isNumber(scoreRaw as number | null)
+      ? Math.round((scoreRaw as number) * 100)
+      : getPressurePeak(dynamic)
+    // Disk pressure: busy-disk ratio from _compute_disk_pressure (busy_disks/total_disks × 100)
+    const diskBusyPct = (dynamic?.disk as Record<string, unknown> | undefined)?.busy_pct
+    const diskPressure = isNumber(diskBusyPct as number | null) ? (diskBusyPct as number) : null
+    // Network pressure: busy-NIC ratio from _compute_network_pressure (busy_nics/total_nics × 100)
+    const netBusyPct = (dynamic?.pressure as Record<string, unknown> | undefined)?.network_busy_pct
+    const networkPressure = isNumber(netBusyPct as number | null) ? (netBusyPct as number) : null
     return {
       timestamp: label,
       ts,
-      systemPressure: getPressurePeak(dynamic),
-      diskPressure: normalizePercent(dynamic?.pressure?.io),
-      networkPressure: getNetworkUsage(dynamic),
+      systemPressure,
+      diskPressure,
+      networkPressure,
     }
   })
 }
@@ -733,6 +753,7 @@ function ConfigurableChart<T extends { timestamp: string }>({
   data,
   height = 280,
   showBrush = false,
+  hoverPanel = false,
 }: {
   title: string
   storageKey: string
@@ -740,9 +761,11 @@ function ConfigurableChart<T extends { timestamp: string }>({
   data: T[]
   height?: number
   showBrush?: boolean
+  hoverPanel?: boolean
 }) {
   const defaults = useMemo(() => allSeries.filter((s) => s.defaultOn !== false).map((s) => s.key), [allSeries])
   const [active, toggle] = usePersistedSet(storageKey, defaults)
+  const [hoverData, setHoverData] = useState<Array<{ name: string; value: unknown; color: string; unit: string }> | null>(null)
 
   // Determine which unit groups are active, assign left/right Y-axis (max 2)
   const { leftUnit, rightUnit, activeSeries } = useMemo(() => {
@@ -772,6 +795,38 @@ function ConfigurableChart<T extends { timestamp: string }>({
 
   const leftDomain: [number, string | number] | undefined = leftUnit === '%' ? [0, 100] : undefined
   const rightDomain: [number, string | number] | undefined = rightUnit === '%' ? [0, 100] : undefined
+
+  // Build a colour map keyed by series key for the hover panel
+  const colorByKey = useMemo(() => {
+    const map: Record<string, string> = {}
+    allSeries.forEach((s) => { map[s.key] = s.color })
+    return map
+  }, [allSeries])
+
+  const unitByKey = useMemo(() => {
+    const map: Record<string, string> = {}
+    allSeries.forEach((s) => { map[s.key] = s.unit })
+    return map
+  }, [allSeries])
+
+  const handleMouseMove = useCallback((chartData: { activePayload?: Array<{ dataKey: string; name: string; value: unknown }> }) => {
+    if (!hoverPanel) return
+    if (chartData?.activePayload?.length) {
+      setHoverData(
+        chartData.activePayload.map((p) => ({
+          name: p.name,
+          value: p.value,
+          color: colorByKey[p.dataKey] ?? COLORS.textMuted,
+          unit: unitByKey[p.dataKey] ?? '',
+        }))
+      )
+    }
+  }, [hoverPanel, colorByKey, unitByKey])
+
+  const handleMouseLeave = useCallback(() => {
+    if (!hoverPanel) return
+    setHoverData(null)
+  }, [hoverPanel])
 
   return (
     <Card
@@ -828,7 +883,12 @@ function ConfigurableChart<T extends { timestamp: string }>({
       ) : (
         <div style={{ width: '100%', height }}>
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 4, right: rightUnit ? 20 : 8, left: 0, bottom: 0 }}>
+            <LineChart
+              data={data}
+              margin={{ top: 4, right: rightUnit ? 20 : 8, left: 0, bottom: 0 }}
+              onMouseMove={hoverPanel ? handleMouseMove : undefined}
+              onMouseLeave={hoverPanel ? handleMouseLeave : undefined}
+            >
               <CartesianGrid stroke={`${COLORS.border}99`} strokeDasharray="3 3" />
               <XAxis
                 dataKey="timestamp"
@@ -851,10 +911,19 @@ function ConfigurableChart<T extends { timestamp: string }>({
                   tickFormatter={unitFormat(rightUnit)}
                 />
               )}
-              <Tooltip
-                contentStyle={{ background: COLORS.panelBg, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
-                formatter={tooltipFmt2}
-              />
+              {!hoverPanel && (
+                <Tooltip
+                  contentStyle={{ background: COLORS.panelBg, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+                  wrapperStyle={{ zIndex: 100 }}
+                  formatter={tooltipFmt2}
+                />
+              )}
+              {hoverPanel && (
+                <Tooltip
+                  cursor={{ stroke: COLORS.accent, strokeWidth: 1, strokeDasharray: '4 2' }}
+                  content={() => null}
+                />
+              )}
               {activeSeries.map((s) => (
                 <Line
                   key={s.key}
@@ -873,6 +942,39 @@ function ConfigurableChart<T extends { timestamp: string }>({
               )}
             </LineChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Inline hover panel (replaces floating tooltip when hoverPanel=true) */}
+      {hoverPanel && (
+        <div
+          style={{
+            minHeight: 28,
+            marginTop: 8,
+            padding: '4px 8px',
+            borderRadius: 4,
+            background: 'rgba(120,176,255,0.04)',
+            border: `1px solid ${COLORS.border}`,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '2px 12px',
+            alignItems: 'center',
+          }}
+        >
+          {hoverData && hoverData.length > 0 ? (
+            hoverData.map((item) => {
+              const formatted = formatHoverValue(item.value, item.unit)
+              return (
+                <span key={item.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: item.color, flexShrink: 0, display: 'inline-block' }} />
+                  <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>{item.name}</Text>
+                  <Text style={{ color: item.color, fontSize: 10, fontWeight: 600 }}>{formatted}</Text>
+                </span>
+              )
+            })
+          ) : (
+            <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>Hover over chart to see values</Text>
+          )}
         </div>
       )}
     </Card>
@@ -903,7 +1005,7 @@ function GpuHistoryCard({ series }: { series: GpuTrendSeries }) {
   const engineLines: Array<{ key: string; name: string; color: string; dasharray?: string; yAxisId: string; strokeWidth?: number }> = [
     { key: 'utilization', name: 'GPU Util %', color: '#ff6b6b', yAxisId: 'util', strokeWidth: 2 },
     ...ENGINE_CURVE_META.map((e) => ({ key: e.key, name: e.name, color: e.color, yAxisId: 'util' })),
-    { key: 'memUsage', name: memLabel, color: COLORS.yellow, dasharray: '5 3', yAxisId: 'util' },
+    { key: 'memUsage', name: memLabel, color: '#4ade80', dasharray: '5 3', yAxisId: 'util' },
     { key: 'gt0Act', name: 'GT0 Act MHz', color: '#cbd5e1', yAxisId: 'freq' },
     { key: 'gt0Req', name: 'GT0 Req MHz', color: '#cbd5e1', dasharray: '6 4', yAxisId: 'freq' },
     { key: 'gt1Act', name: 'GT1 Act MHz', color: '#34d399', yAxisId: 'freq' },
@@ -1131,6 +1233,7 @@ function CpuPerCoreHistoryCard({ info }: { info: CpuPerCoreInfo }) {
           allSeries={pCoreSeries}
           height={240}
           showBrush
+          hoverPanel
         />
       )}
       {eCoreSeries.length > 0 && (
@@ -1141,6 +1244,7 @@ function CpuPerCoreHistoryCard({ info }: { info: CpuPerCoreInfo }) {
           allSeries={eCoreSeries}
           height={240}
           showBrush
+          hoverPanel
         />
       )}
       {tempSeries.length > 1 && (
@@ -1158,7 +1262,6 @@ function CpuPerCoreHistoryCard({ info }: { info: CpuPerCoreInfo }) {
 }
 
 export default function HistoryDashboard({ active }: Props) {
-  const [limit, setLimit] = useState<number>(100)
   const [rangePreset, setRangePreset] = useState<RangePreset>('15m')
   const [customRange, setCustomRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [history, setHistory] = useState<HistoryData | null>(null)
@@ -1211,7 +1314,7 @@ export default function HistoryDashboard({ active }: Props) {
       endTime = nowSec
     }
 
-    const queryLimit = Math.max(limit, estimateRequiredLimit(rangePreset, customRange))
+    const queryLimit = estimateRequiredLimit(rangePreset, customRange)
 
     try {
       const data = await api.getHistory({
@@ -1228,7 +1331,7 @@ export default function HistoryDashboard({ active }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [active, limit, rangePreset, customRange, customRangeReady])
+  }, [active, rangePreset, customRange, customRangeReady])
 
   useEffect(() => {
     if (!active) return
@@ -1403,13 +1506,6 @@ export default function HistoryDashboard({ active }: Props) {
             />
           )}
 
-          <Select
-            value={limit}
-            onChange={setLimit}
-            style={{ width: 120 }}
-            options={LIMIT_OPTIONS.map((val) => ({ label: `${val} rows`, value: val }))}
-          />
-
           <Button icon={<ReloadOutlined />} onClick={() => fetchHistory()} disabled={rangePreset === 'custom' && !customRangeReady}>
             Manual Refresh
           </Button>
@@ -1581,7 +1677,7 @@ export default function HistoryDashboard({ active }: Props) {
             { key: 'cpuUtilization', name: 'CPU Total', color: COLORS.accent, unit: '%' },
             { key: 'pCoreUtilization', name: 'P-Core Util', color: '#e07b54', unit: '%' },
             { key: 'eCoreUtilization', name: 'E-Core Util', color: COLORS.green, unit: '%' },
-            { key: 'memoryUtilization', name: 'Memory', color: COLORS.yellow, unit: '%' },
+            { key: 'memoryUtilization', name: 'Memory', color: '#4ade80', unit: '%' },
             { key: 'pCoreFreqMhz', name: 'P-Core Freq', color: '#ff9f1c', unit: 'MHz', defaultOn: false },
             { key: 'eCoreFreqMhz', name: 'E-Core Freq', color: '#7ae582', unit: 'MHz', dasharray: '6 3', defaultOn: false },
             { key: 'cpuTemperatureC', name: 'CPU Temp', color: '#f94144', unit: '°C', dasharray: '4 2', defaultOn: false },

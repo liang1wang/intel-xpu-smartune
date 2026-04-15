@@ -125,7 +125,7 @@ def register_system_pressure_monitor(spm) -> None:
 _SNAPSHOT_RETENTION_DEFAULT_DAYS: int = 3
 _SNAPSHOT_RETENTION_MIN_DAYS: int = 1
 _SNAPSHOT_RETENTION_MAX_DAYS: int = 7
-_SNAPSHOT_CLEANUP_INTERVAL_SEC: float = 3600.0  # run cleanup every hour
+_SNAPSHOT_CLEANUP_INTERVAL_SEC: float = 300.0  # run cleanup every 5 minutes
 
 # Path of the settings file — stored in the project root alongside the database.
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "monitor_settings.json")

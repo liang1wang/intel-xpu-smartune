@@ -171,6 +171,7 @@ export interface StaticInfoData {
     freq_mhz: {
       min_mhz: number | null
       max_mhz: number | null
+      base_mhz?: number | null
       per_core_mhz: Array<number | null>
       p_core_freq_mhz?: { min_mhz: number | null; max_mhz: number | null } | null
       e_core_freq_mhz?: { min_mhz: number | null; max_mhz: number | null } | null

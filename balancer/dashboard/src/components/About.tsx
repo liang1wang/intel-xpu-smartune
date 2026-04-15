@@ -47,14 +47,17 @@ function buildGpuCardLabels(
   cardKeys: string[],
   pcieKeys: Set<string>,
 ): Record<string, string> {
+  const { igpuKeys, dgpuKeys } = cardKeys.reduce<{ igpuKeys: string[]; dgpuKeys: string[] }>(
+    (acc, k) => {
+      if (pcieKeys.has(k)) acc.dgpuKeys.push(k)
+      else acc.igpuKeys.push(k)
+      return acc
+    },
+    { igpuKeys: [], dgpuKeys: [] },
+  )
   const labels: Record<string, string> = {}
-  for (const key of cardKeys) {
-    if (pcieKeys.has(key)) {
-      labels[key] = `dGPU(${key})`
-    } else {
-      labels[key] = `iGPU(${key})`
-    }
-  }
+  igpuKeys.forEach((k, i) => { labels[k] = `iGPU (card${i})` })
+  dgpuKeys.forEach((k, i) => { labels[k] = `dGPU (card${igpuKeys.length + i})` })
   return labels
 }
 

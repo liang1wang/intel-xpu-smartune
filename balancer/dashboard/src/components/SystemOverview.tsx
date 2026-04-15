@@ -57,10 +57,12 @@ const REFRESH_INTERVAL_OPTIONS = [
 // Store enough points for 5 min at the fastest polling rate (1 s = 300 points)
 const TREND_STORAGE_MAX_POINTS = 300
 const ENGINE_ORDER = ['vcs', 'vecs', 'ccs', 'rcs', 'bcs'] as const
+const MHZ_TO_GHZ = 1000
+const REFRESH_INDICATOR_STYLE: React.CSSProperties = { display: 'inline-flex', width: 18, height: 18, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
 
 const PERF_COLORS = {
   cpu: '#4cc9f0',
-  memory: '#f9c74f',
+  memory: '#4ade80',
   disk: '#56c8d8',
   network: '#2dd4bf',
   gpu: '#5aa9ff',
@@ -88,6 +90,7 @@ const ENGINE_COLORS: Record<EngineKey, string> = {
 interface GpuDeviceView {
   id: string
   label: string
+  displayLabel: string
   index: number
   cardKey: string
   available: boolean
@@ -365,6 +368,7 @@ function buildGpuDevices(staticInfo: StaticInfoData | null, dynamicInfo: Dynamic
     } else {
       label = `dGPU${dgpuCounter++}`
     }
+    // displayLabel computed after loop via reassignment
 
     const freqs = qdev?.freqs || []
     const gt0 = freqs.find((f) => f.name === 'gt0') || freqs[0]
@@ -406,6 +410,7 @@ function buildGpuDevices(staticInfo: StaticInfoData | null, dynamicInfo: Dynamic
     devices.push({
       id,
       label,
+      displayLabel: label,  // placeholder, reassigned below
       index,
       cardKey,
       available,
@@ -441,6 +446,13 @@ function buildGpuDevices(staticInfo: StaticInfoData | null, dynamicInfo: Dynamic
       engineUtil,
     })
   }
+
+  // Reassign displayLabels with type-based sequential card indices:
+  // iGPU → card0, card1... then dGPU → card{n_igpu}, card{n_igpu+1}...
+  const igpuDevices = devices.filter((d) => d.label === 'iGPU')
+  const dgpuDevices = devices.filter((d) => d.label !== 'iGPU')
+  igpuDevices.forEach((d, i) => { d.displayLabel = `iGPU (card${i})` })
+  dgpuDevices.forEach((d, i) => { d.displayLabel = `dGPU (card${igpuDevices.length + i})` })
 
   return devices
 }
@@ -2037,7 +2049,7 @@ function GpuDeviceCard({
         <div>
           <Space size={8}>
             <PartitionOutlined style={{ color: PERF_COLORS.gpu }} />
-            <Text style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>{device.label}<span style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: 400, marginLeft: 3 }}>({device.cardKey})</span></Text>
+            <Text style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>{device.displayLabel}</Text>
             <Tag
               style={{
                 color: device.statusColor,
@@ -2202,7 +2214,7 @@ function GpuDeviceCard({
 
           const chart1Items = [
             ...engineSeries.map((s) => ({ key: s.key, name: `${s.label} %`, color: s.stroke })),
-            { key: 'mem', name: memLabel, color: COLORS.yellow, dasharray: '5 3' },
+            { key: 'mem', name: memLabel, color: PERF_COLORS.memory, dasharray: '5 3' },
             { key: 'gt0Act', name: 'GT0 Act MHz', color: '#cbd5e1' },
             { key: 'gt0Req', name: 'GT0 Req MHz', color: '#cbd5e1', dasharray: '6 4' },
             { key: 'gt1Act', name: 'GT1 Act MHz', color: '#34d399' },
@@ -2236,7 +2248,7 @@ function GpuDeviceCard({
                         hide={hidden.has(s.key)} />
                     ))}
                     <Line yAxisId="pct" type="monotone" dataKey="mem" name={memLabel}
-                      stroke={COLORS.yellow} strokeDasharray="5 3" dot={false} strokeWidth={2} isAnimationActive={false}
+                      stroke={PERF_COLORS.memory} strokeDasharray="5 3" dot={false} strokeWidth={2} isAnimationActive={false}
                       hide={hidden.has('mem')} />
                     <Line yAxisId="mhz" type="monotone" dataKey="gt0Act" name="GT0 Act MHz"
                       stroke={'#cbd5e1'} dot={false} strokeWidth={2} isAnimationActive={false}
@@ -2552,7 +2564,7 @@ export default function SystemOverview({ active }: Props) {
   const gpuUtilizationSeries = useMemo(
     () => gpuDevices.map((device, index) => ({
       key: `gpu-util-${device.id}`,
-      label: `${device.label} Util %`,
+      label: `${device.displayLabel} Util %`,
       data: getSeries(`gpu:${device.id}:util`),
       stroke: GPU_UTIL_COLORS[index % GPU_UTIL_COLORS.length],
     })),
@@ -2562,7 +2574,7 @@ export default function SystemOverview({ active }: Props) {
   const gpuSplitBars = useMemo(
     () => gpuDevices.map((device, index) => ({
       key: `gpu-bar-${device.id}`,
-      label: device.label,
+      label: device.displayLabel,
       value: device.utilization,
       color: GPU_UTIL_COLORS[index % GPU_UTIL_COLORS.length],
     })),
@@ -2592,40 +2604,40 @@ export default function SystemOverview({ active }: Props) {
 
   const gpuCombinedDetails = useMemo(
     () => gpuDevices.flatMap((device) => [
-      { label: device.label, value: '', divider: true },
+      { label: device.displayLabel, value: '', divider: true },
       // Dynamic items only — static (EU Count, PCIe) are in gpuSnapshotMeta subtitle
       {
-        label: `${device.label} GT0 Act Freq`,
+        label: `${device.displayLabel} GT0 Act Freq`,
         value: formatMetric(device.frequencies.gt0?.act_mhz, 'MHz', 0),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} GT0 Req Freq`,
+        label: `${device.displayLabel} GT0 Req Freq`,
         value: formatMetric(device.frequencies.gt0?.cur_mhz, 'MHz', 0),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} GT1 Act Freq`,
+        label: `${device.displayLabel} GT1 Act Freq`,
         value: formatMetric(device.frequencies.gt1?.act_mhz, 'MHz', 0),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} GT1 Req Freq`,
+        label: `${device.displayLabel} GT1 Req Freq`,
         value: formatMetric(device.frequencies.gt1?.cur_mhz, 'MHz', 0),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} GPU Power`,
+        label: `${device.displayLabel} GPU Power`,
         value: formatMetric(device.powerGpu, 'W', 2),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: `${device.label} ${device.label === 'iGPU' ? 'Pkg' : 'Card'} Power`,
+        label: `${device.displayLabel} ${device.label === 'iGPU' ? 'Pkg' : 'Card'} Power`,
         value: formatMetric(device.powerPkg, 'W', 2),
         source: 'dynamic' as DataSourceKind,
       },
       {
-        label: device.label === 'iGPU' ? `${device.label} Sys Mem` : `${device.label} VRAM`,
+        label: device.label === 'iGPU' ? `${device.displayLabel} Sys Mem` : `${device.displayLabel} VRAM`,
         value: formatPercent(device.vramUsage),
         source: 'dynamic' as DataSourceKind,
       },
@@ -2648,11 +2660,29 @@ export default function SystemOverview({ active }: Props) {
       ? `${dynamicInfo.cpu.per_core_usage.length} cores`
       : 'No data'
 
-  const memorySnapshotMeta = staticInfo?.memory
-    ? `${formatMetric(staticInfo.memory.total_gb, 'GB', 1)} | ${staticInfo.memory.ddr_speeds.length ? staticInfo.memory.ddr_speeds.join('/') : 'DDR N/A'}`
-    : isNumber(dynamicInfo?.memory.total_gb)
+  const memorySnapshotMeta = useMemo(() => {
+    if (staticInfo?.memory) {
+      const parts: string[] = []
+      if (isNumber(staticInfo.memory.total_gb)) parts.push(`${staticInfo.memory.total_gb.toFixed(1)} GB`)
+      // Memory type (e.g. LPDDR5) from devices or ddr_speeds
+      const memTypes = [...new Set(
+        (staticInfo.memory.devices?.devices ?? []).map((d) => d.type).filter(Boolean) as string[]
+      )]
+      if (memTypes.length) parts.push(memTypes.join('/'))
+      // Prefer actual configured speed over rated speed
+      const firstDev = staticInfo.memory.devices?.devices?.[0]
+      const configuredSpeed = firstDev?.configured_speed
+      const speedStr = (configuredSpeed && configuredSpeed !== 'Unknown')
+        ? configuredSpeed
+        : (staticInfo.memory.ddr_speeds.length ? staticInfo.memory.ddr_speeds.join('/') : null)
+      if (speedStr) parts.push(speedStr)
+      else if (!memTypes.length) parts.push('DDR N/A')
+      return parts.join(' | ')
+    }
+    return isNumber(dynamicInfo?.memory.total_gb)
       ? `${dynamicInfo.memory.total_gb.toFixed(1)} GB total`
       : 'No data'
+  }, [staticInfo?.memory, dynamicInfo?.memory.total_gb])
 
   // Build per-NIC render data
   const networkNicCards = useMemo(() => {
@@ -2713,7 +2743,7 @@ export default function SystemOverview({ active }: Props) {
 
   const gpuSnapshotMeta = gpuDevices.length
     ? gpuDevices.map((d) => {
-        const parts: string[] = [`${d.label}(${d.driver !== 'N/A' ? d.driver : '?'})`]
+        const parts: string[] = [`${d.displayLabel}(${d.driver !== 'N/A' ? d.driver : '?'})`]
         if (d.label === 'iGPU' && isNumber(d.euCount)) parts.push(`EU ${d.euCount}`)
         if (d.pcieLink.current_speed) parts.push(`PCIe ${formatPcieLink(d.pcieLink.current_speed, d.pcieLink.current_width, d.pcieLink.max_speed, d.pcieLink.max_width)}`)
         return parts.join(' ')
@@ -2860,7 +2890,7 @@ export default function SystemOverview({ active }: Props) {
       return aIsIgpu - bIsIgpu
     })
     sorted.forEach((device) => {
-      options.push({ label: device.label, value: device.id })
+      options.push({ label: device.displayLabel, value: device.id })
     })
     return options
   }, [gpuDevices])
@@ -2879,6 +2909,18 @@ export default function SystemOverview({ active }: Props) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <Space size={6}>
+            <span style={REFRESH_INDICATOR_STYLE}>
+              {loadingDynamic ? <Spin size="small" /> : <Badge status="processing" color={COLORS.green} />}
+            </span>
+            <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>Refresh</Text>
+            <Segmented
+              size="small"
+              options={REFRESH_INTERVAL_OPTIONS}
+              value={refreshIntervalMs}
+              onChange={(value) => setRefreshIntervalMs(Number(value))}
+            />
+          </Space>
+          <Space size={6}>
             <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>Trend</Text>
             <Segmented
               size="small"
@@ -2888,16 +2930,6 @@ export default function SystemOverview({ active }: Props) {
               ]}
               value={trendWindow}
               onChange={(value) => setTrendWindow(value as '1m' | '5m')}
-            />
-          </Space>
-          <Space size={6}>
-            {loadingDynamic ? <Spin size="small" /> : <Badge status="processing" color={COLORS.green} />}
-            <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>Refresh</Text>
-            <Segmented
-              size="small"
-              options={REFRESH_INTERVAL_OPTIONS}
-              value={refreshIntervalMs}
-              onChange={(value) => setRefreshIntervalMs(Number(value))}
             />
           </Space>
           {dynamicInfo?.collected_at && (
@@ -3008,7 +3040,19 @@ export default function SystemOverview({ active }: Props) {
             subtitle={memorySnapshotMeta}
             details={[
               { label: 'Available', value: formatMetric(dynamicInfo?.memory.available_gb, 'GB', 1), source: 'dynamic' },
-              { label: 'Usage', value: formatPercent(memoryTrendValue), source: 'dynamic' },
+              {
+                label: 'Usage',
+                value: (() => {
+                  const totalGb = dynamicInfo?.memory.total_gb ?? staticInfo?.memory.total_gb
+                  const usedGb = isNumber(totalGb) && isNumber(memoryTrendValue)
+                    ? totalGb * memoryTrendValue / 100
+                    : null
+                  if (isNumber(usedGb) && isNumber(memoryTrendValue))
+                    return `${usedGb.toFixed(1)} GB (${memoryTrendValue.toFixed(0)}%)`
+                  return formatPercent(memoryTrendValue)
+                })(),
+                source: 'dynamic',
+              },
               { label: 'Swap', value: dynamicInfo?.memory.swap_total_gb != null ? `${formatMetric(dynamicInfo.memory.swap_used_gb, 'GB', 1)} / ${dynamicInfo.memory.swap_total_gb.toFixed(1)} GB (${formatPercent(dynamicInfo.memory.swap_usage_percent)})` : 'N/A', source: 'dynamic' },
             ]}
             sparkMode={sparkMode}
@@ -3150,7 +3194,7 @@ export default function SystemOverview({ active }: Props) {
         {gpuDevices.length === 0 ? null : gpuDevices.map((device, index) => (
           <Col xs={24} md={12} xl={8} key={device.id}>
             <TrendPanel
-              title={device.label}
+              title={device.displayLabel}
               accent={GPU_UTIL_COLORS[index % GPU_UTIL_COLORS.length]}
               value={device.utilization}
               unit="%"

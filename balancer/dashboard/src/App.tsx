@@ -56,21 +56,21 @@ export default function App() {
       key: '4',
       label: (
         <Space>
-          <ControlOutlined />
-          Balancer
+          <LineChartOutlined />
+          History
         </Space>
       ),
-      children: <Balance active={activeTab === '4'} />,
+      children: <HistoryDashboard active={activeTab === '4'} />,
     },
     {
       key: '5',
       label: (
         <Space>
-          <LineChartOutlined />
-          History
+          <ControlOutlined />
+          Balancer
         </Space>
       ),
-      children: <HistoryDashboard active={activeTab === '5'} />,
+      children: <Balance active={activeTab === '5'} />,
     },
     {
       key: '6',

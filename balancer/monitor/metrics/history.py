@@ -332,6 +332,8 @@ def _build_dynamic_history_payload(data: Dict[str, Any]) -> Dict[str, Any]:
             "usage_percent": to_float(memory.get("usage_percent")),
         },
         "pressure": {
+            "score": to_float(pressure.get("score")),
+            "level": pressure.get("level"),
             "cpu": to_float(pressure.get("cpu")),
             "memory": to_float(pressure.get("memory")),
             "io": to_float(pressure.get("io")),

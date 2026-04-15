@@ -338,13 +338,17 @@ def _compute_disk_pressure(disk_stats: Dict[str, Any]) -> Dict[str, Any]:
     busy_ratio = busy_count / total_disks if total_disks > 0 else None
     busy_pct = busy_ratio * 100.0 if busy_ratio is not None else None
 
+    _th = b_config.thresholds or {}
+    _th_low = _th.get("low", 0.4)
+    _th_medium = _th.get("medium", 0.6)
+    _th_high = _th.get("high", 0.8)
     if total_disks == 0 or busy_ratio is None:
         busy_level = "NO DATA"
-    elif busy_ratio < 0.4:
+    elif busy_ratio < _th_low:
         busy_level = "LOW"
-    elif busy_ratio < 0.6:
+    elif busy_ratio < _th_medium:
         busy_level = "MEDIUM"
-    elif busy_ratio < 0.8:
+    elif busy_ratio < _th_high:
         busy_level = "HIGH"
     else:
         busy_level = "CRITICAL"
@@ -392,13 +396,17 @@ def _compute_network_pressure(network_bw: Dict[str, Any], net_static: Dict[str, 
     busy_ratio = busy_count / total_nics if total_nics > 0 else None
     busy_pct = busy_ratio * 100.0 if busy_ratio is not None else None
 
+    _nth = b_config.network_thresholds or {}
+    _nth_low = _nth.get("low", 0.4)
+    _nth_medium = _nth.get("medium", 0.6)
+    _nth_high = _nth.get("high", 0.8)
     if total_nics == 0 or busy_ratio is None:
         busy_level = "NO DATA"
-    elif busy_ratio < 0.4:
+    elif busy_ratio < _nth_low:
         busy_level = "LOW"
-    elif busy_ratio < 0.6:
+    elif busy_ratio < _nth_medium:
         busy_level = "MEDIUM"
-    elif busy_ratio < 0.8:
+    elif busy_ratio < _nth_high:
         busy_level = "HIGH"
     else:
         busy_level = "CRITICAL"

@@ -15,6 +15,7 @@
 
 import re
 import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import psutil
@@ -307,6 +308,18 @@ def _avg(values: List[Optional[float]], indices: List[int]) -> Optional[float]:
     return round(sum(picked) / len(picked), 2)
 
 
+def _get_cpu_base_freq_mhz() -> Optional[float]:
+    """Read the base CPU frequency (kHz → MHz) from sysfs, or return None."""
+    try:
+        base_path = Path("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency")
+        if base_path.exists():
+            val = base_path.read_text().strip()
+            return round(int(val) / 1000.0, 1)
+    except Exception:
+        pass
+    return None
+
+
 def get_cpu_freq_summary() -> Dict[str, Any]:
     freqs = psutil.cpu_freq(percpu=True)
     per_core = []
@@ -344,6 +357,7 @@ def get_cpu_freq_summary() -> Dict[str, Any]:
     return {
         "min_mhz": min_freq,
         "max_mhz": max_freq,
+        "base_mhz": _get_cpu_base_freq_mhz(),
         "per_core_mhz": per_core,
         "p_core_freq_mhz": _core_range(p_indices) if p_indices else None,
         "e_core_freq_mhz": _core_range(e_indices) if e_indices else None,

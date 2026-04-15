@@ -13,7 +13,7 @@ from flask import Flask, request, Response, stream_with_context
 
 from balancer.balancer import DynamicBalancer
 from db.DatabaseModel import AIAppPriority, DBStatus, init_database
-from monitor.monitor_api import monitor_bp, register_system_pressure_monitor
+from monitor.monitor_api import monitor_bp, register_system_pressure_monitor, _start_snapshot_cleanup_task
 from monitor.system_info import preload_static_info, shutdown_gpu_usage
 from utils.app_utils import adjust_oom_priority, callback_manager, fetch_all_apps, get_priority_value
 from utils.http_utils import RetCode, construct_response
@@ -21,6 +21,7 @@ from utils.logger import logger
 
 app = Flask(__name__)
 app.register_blueprint(monitor_bp)
+_start_snapshot_cleanup_task()
 
 CERT_FILE = './b_server.crt'
 KEY_FILE = './b_server.key'
