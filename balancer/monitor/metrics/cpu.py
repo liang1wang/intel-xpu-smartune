@@ -26,6 +26,10 @@ from utils.logger import logger
 _CORE_CLASS_CACHE: Dict[str, Any] = {"cpu_count": None, "result": None}
 _CORE_TOPOLOGY: Optional[List[Optional[int]]] = None
 
+# Prime psutil's internal CPU-time baseline so the first get_cpu_dynamic()
+# call returns a meaningful delta-averaged value instead of 0.0.
+psutil.cpu_percent(interval=None, percpu=True)
+
 
 def _expand_cpu_ranges(spec: Optional[str]) -> Set[int]:
     if not spec:
@@ -365,7 +369,10 @@ def get_cpu_freq_summary() -> Dict[str, Any]:
 
 
 def get_cpu_dynamic() -> Dict[str, Any]:
-    usage_per_core = psutil.cpu_percent(interval=0.2, percpu=True)
+    # interval=None: average over the time since the last call in this
+    # process, giving true delta semantics (no blocking, no missed peaks).
+    # Primed at module import so the first real call is already valid.
+    usage_per_core = psutil.cpu_percent(interval=None, percpu=True)
     total_usage = round(sum(usage_per_core) / len(usage_per_core), 2) if usage_per_core else 0.0
     freqs = psutil.cpu_freq(percpu=True)
     per_core_freq = [round(f.current, 1) if f else None for f in freqs or []]

@@ -42,43 +42,47 @@ function summarizeFreqBounds(bounds?: Record<string, { min_mhz: number | null; m
   return entries.map(([name, range]) => `${name}: ${formatFreqRange(range.min_mhz, range.max_mhz)}`).join(' | ')
 }
 
-/** Cards with a PCIe entry = dGPU; rest = iGPU */
+function summarizeNpuFreqBounds(bounds?: Record<string, { min_mhz?: number | null; max_mhz: number | null }>): string {
+  const entries = Object.entries(bounds || {})
+  if (!entries.length) return 'N/A'
+  return entries.map(([, range]) => formatFreqRange(range.min_mhz ?? null, range.max_mhz)).join(' | ')
+}
+
+/** Cards with a PCIe entry = dGPU; rest = iGPU. Labels use the real cardKey. */
 function buildGpuCardLabels(
   cardKeys: string[],
   pcieKeys: Set<string>,
+  pciAddresses: Record<string, string> = {},
 ): Record<string, string> {
-  const { igpuKeys, dgpuKeys } = cardKeys.reduce<{ igpuKeys: string[]; dgpuKeys: string[] }>(
-    (acc, k) => {
-      if (pcieKeys.has(k)) acc.dgpuKeys.push(k)
-      else acc.igpuKeys.push(k)
-      return acc
-    },
-    { igpuKeys: [], dgpuKeys: [] },
-  )
   const labels: Record<string, string> = {}
-  igpuKeys.forEach((k, i) => { labels[k] = `iGPU (card${i})` })
-  dgpuKeys.forEach((k, i) => { labels[k] = `dGPU (card${igpuKeys.length + i})` })
+  for (const k of cardKeys) {
+    const pci = (pciAddresses[k] || '').toLowerCase()
+    const isIntegrated = pci ? /(^|:)00:02\./.test(pci) : !pcieKeys.has(k)
+    labels[k] = `${isIntegrated ? 'iGPU' : 'dGPU'} (${k})`
+  }
   return labels
 }
 
 function summarizeGpuFreqBounds(
   bounds?: Record<string, { min_mhz: number | null; max_mhz: number | null }>,
   pcie?: Record<string, unknown>,
+  pciAddresses?: Record<string, string>,
 ): string {
   const entries = Object.entries(bounds || {})
   if (!entries.length) return 'N/A'
-  const labels = buildGpuCardLabels(entries.map(([k]) => k), new Set(Object.keys(pcie || {})))
+  const labels = buildGpuCardLabels(entries.map(([k]) => k), new Set(Object.keys(pcie || {})), pciAddresses)
   return entries.map(([name, range]) => `${labels[name] ?? name}: ${formatFreqRange(range.min_mhz, range.max_mhz)}`).join(' | ')
 }
 
 function summarizeGpuPcie(
   pcie?: Record<string, { current_speed: string | null; current_width: string | null; max_speed: string | null; max_width: string | null }>,
   bounds?: Record<string, unknown>,
+  pciAddresses?: Record<string, string>,
 ): string {
   const entries = Object.entries(pcie || {})
   if (!entries.length) return 'N/A'
   const allKeys = Object.keys(bounds || pcie || {})
-  const labels = buildGpuCardLabels(allKeys, new Set(Object.keys(pcie || {})))
+  const labels = buildGpuCardLabels(allKeys, new Set(Object.keys(pcie || {})), pciAddresses)
   return entries.map(([card, info]) => {
     const cur = info.current_speed && info.current_width
       ? `${info.current_speed} x${info.current_width}`
@@ -102,8 +106,20 @@ function summarizeGpuPerDevice(
   Object.keys(staticInfo.gpu.gt_freq_bounds_mhz || {}).forEach((k) => cardKeySet.add(k))
   Object.keys(staticInfo.gpu.driver_names || {}).forEach((k) => cardKeySet.add(k))
 
-  const cardKeys = Array.from(cardKeySet).sort()
-  const labels = buildGpuCardLabels(cardKeys, new Set(Object.keys(staticInfo.gpu.pcie || {})))
+  const pcieKeys = new Set(Object.keys(staticInfo.gpu.pcie || {}))
+  const pciAddresses = staticInfo.gpu.pci_addresses || {}
+  const isIntegrated = (cardKey: string): boolean => {
+    const pci = (pciAddresses[cardKey] || '').toLowerCase()
+    if (pci) return /(^|:)00:02\./.test(pci)
+    return !pcieKeys.has(cardKey)
+  }
+  const cardKeys = Array.from(cardKeySet).sort((a, b) => {
+    const ai = isIntegrated(a) ? 0 : 1
+    const bi = isIntegrated(b) ? 0 : 1
+    if (ai !== bi) return ai - bi
+    return a.localeCompare(b)
+  })
+  const labels = buildGpuCardLabels(cardKeys, pcieKeys, pciAddresses)
 
   return cardKeys.map((cardKey) => {
     const engineInstances = staticInfo.gpu.engines?.[cardKey] || []
@@ -355,6 +371,21 @@ export default function About({ active }: Props) {
           ]
         })(),
       },
+      ...(staticInfo.disk.devices?.length
+        ? staticInfo.disk.devices.map((dev) => ({
+            title: `Disk: ${dev.name}`,
+            items: [
+              { label: 'Size', value: typeof dev.size_gb === 'number' ? `${dev.size_gb.toFixed(2)} GB` : 'N/A' },
+              { label: 'Type', value: dev.name.startsWith('nvme') ? 'NVMe SSD' : 'Disk' },
+            ],
+          }))
+        : [{
+            title: 'Disk',
+            items: [
+              { label: 'Total size', value: typeof staticInfo.disk.total_size_gb === 'number' ? `${staticInfo.disk.total_size_gb.toFixed(2)} GB` : 'N/A' },
+            ],
+          }]
+      ),
       ...(staticInfo.io.valid_nics?.length
         ? staticInfo.io.valid_nics.map((nic) => ({
             title: `NIC: ${nic.name}`,
@@ -374,31 +405,16 @@ export default function About({ active }: Props) {
             ],
           }]
       ),
-      ...(staticInfo.disk.devices?.length
-        ? staticInfo.disk.devices.map((dev) => ({
-            title: `Disk: ${dev.name}`,
-            items: [
-              { label: 'Size', value: typeof dev.size_gb === 'number' ? `${dev.size_gb.toFixed(2)} GB` : 'N/A' },
-              { label: 'Type', value: dev.name.startsWith('nvme') ? 'NVMe SSD' : 'Disk' },
-            ],
-          }))
-        : [{
-            title: 'Disk',
-            items: [
-              { label: 'Total size', value: typeof staticInfo.disk.total_size_gb === 'number' ? `${staticInfo.disk.total_size_gb.toFixed(2)} GB` : 'N/A' },
-            ],
-          }]
-      ),
-      ...gpuCards,
       {
         title: 'NPU',
         items: [
           { label: 'Name', value: formatPlain(staticInfo.npu.names) },
           { label: 'Device', value: formatPlain(staticInfo.npu.pciid) },
           { label: 'Driver', value: formatPlain(staticInfo.npu.driver_version) },
-          { label: 'Freq bounds', value: summarizeFreqBounds(staticInfo.npu.freq_bounds_mhz) },
+          { label: 'Freq bounds', value: summarizeNpuFreqBounds(staticInfo.npu.freq_bounds_mhz) },
         ],
       },
+      ...gpuCards,
     ]
   }, [staticInfo])
 

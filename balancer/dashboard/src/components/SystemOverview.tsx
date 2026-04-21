@@ -357,16 +357,25 @@ function buildGpuDevices(staticInfo: StaticInfoData | null, dynamicInfo: Dynamic
     const vramStatic = staticInfo?.gpu.vram?.[cardKey] || staticVramEntries[index]?.[1]
     const vramUsage = normalizePercent(vramDyn?.usage_percent ?? vramStatic?.usage_percent ?? null)
 
+    // Determine iGPU vs dGPU. Authoritative source: Intel iGPU is always at
+    // bus 00, device 02 (e.g. 0000:00:02.0). Fall back to qdev.dev_type when
+    // the PCI address is unavailable.
+    const pciAddr = (staticInfo?.gpu.pci_addresses?.[cardKey] || qdev?.pci_dev || '').toLowerCase()
+    const isIntegratedByPci = /(^|:)00:02\./.test(pciAddr)
     const typeRaw = (qdev?.dev_type || '').toLowerCase()
+    const isIntegratedByType = typeRaw.includes('integrated') || typeRaw.includes('igpu')
+    const isDiscreteByType = typeRaw.includes('discrete') || typeRaw.includes('dgpu')
+
     let label: string
-    if (typeRaw.includes('integrated') || typeRaw.includes('igpu')) {
+    if (pciAddr) {
+      label = isIntegratedByPci ? 'iGPU' : `dGPU${dgpuCounter++}`
+    } else if (isIntegratedByType) {
       label = 'iGPU'
-    } else if (typeRaw.includes('discrete') || typeRaw.includes('dgpu')) {
+    } else if (isDiscreteByType) {
       label = `dGPU${dgpuCounter++}`
-    } else if (index === 0) {
-      label = 'iGPU'
     } else {
-      label = `dGPU${dgpuCounter++}`
+      // No PCI and no dev_type info: assume first card is iGPU (legacy).
+      label = index === 0 ? 'iGPU' : `dGPU${dgpuCounter++}`
     }
     // displayLabel computed after loop via reassignment
 
@@ -447,12 +456,12 @@ function buildGpuDevices(staticInfo: StaticInfoData | null, dynamicInfo: Dynamic
     })
   }
 
-  // Reassign displayLabels with type-based sequential card indices:
-  // iGPU → card0, card1... then dGPU → card{n_igpu}, card{n_igpu+1}...
-  const igpuDevices = devices.filter((d) => d.label === 'iGPU')
-  const dgpuDevices = devices.filter((d) => d.label !== 'iGPU')
-  igpuDevices.forEach((d, i) => { d.displayLabel = `iGPU (card${i})` })
-  dgpuDevices.forEach((d, i) => { d.displayLabel = `dGPU (card${igpuDevices.length + i})` })
+  // Use the actual kernel DRM card identifier (card0, card1, …) in the display
+  // label so it matches the sysfs naming shown in tooltips and logs.
+  devices.forEach((d) => {
+    const role = d.label === 'iGPU' ? 'iGPU' : 'dGPU'
+    d.displayLabel = `${role} (${d.cardKey})`
+  })
 
   return devices
 }
@@ -3060,6 +3069,31 @@ export default function SystemOverview({ active }: Props) {
           />
         </Col>
 
+        {diskDevices.map(([diskName, diskData]) => (
+          <Col xs={24} md={12} xl={8} key={diskName}>
+            <TrendPanel
+              title={`Disk: ${diskName}`}
+              accent={PERF_COLORS.disk}
+              value={normalizePercent(diskData.utilization)}
+              unit="%"
+              status={diskData.is_busy ? 'Busy' : 'OK'}
+              statusColor={diskData.is_busy ? COLORS.red : COLORS.green}
+              series={getSeries(`disk:${diskName}:util`)}
+              subtitle={diskSizeLookup[diskName] != null ? `${formatMetric(diskSizeLookup[diskName], 'GB', 1)}` : undefined}
+              details={[
+                { label: 'Size', value: formatMetric(diskSizeLookup[diskName], 'GB', 2), source: 'static' },
+                { label: 'Read', value: formatMetric(diskData.read_kb_per_sec, 'KB/s', 1), source: 'dynamic' },
+                { label: 'Write', value: formatMetric(diskData.write_kb_per_sec, 'KB/s', 1), source: 'dynamic' },
+                { label: 'Read IOPS', value: formatMetric(diskData.read_iops, 'IOPS', 1), source: 'dynamic' },
+                { label: 'Write IOPS', value: formatMetric(diskData.write_iops, 'IOPS', 1), source: 'dynamic' },
+                { label: 'Utilization', value: formatPercent(diskData.utilization), source: 'dynamic' },
+              ]}
+              sparkMode={sparkMode}
+              trendWindow={trendWindow}
+            />
+          </Col>
+        ))}
+
         {networkNicCards.length > 1 ? networkNicCards.map((nic) => {
           const nicSeries = getNetworkNicSeries(nic.nicName)
           return (
@@ -3191,7 +3225,36 @@ export default function SystemOverview({ active }: Props) {
           </Col>
         )}
 
-        {gpuDevices.length === 0 ? null : gpuDevices.map((device, index) => (
+        <Col xs={24} md={12} xl={8}>
+          <TrendPanel
+            title="NPU"
+            accent={PERF_COLORS.npu}
+            value={npuValue}
+            unit="%"
+            status={dynamicInfo ? (dynamicInfo.npu.npu_smi.available ? 'OK' : 'Offline') : undefined}
+            statusColor={dynamicInfo?.npu.npu_smi.available ? COLORS.green : COLORS.textMuted}
+            series={getSeries('npu:util')}
+            subtitle={npuSnapshotMeta}
+            details={[
+              { label: 'Util', value: formatPercent(npuUtilValue), source: 'dynamic' },
+              { label: 'Power', value: npuParsed?.power_w != null ? `${(npuParsed.power_w as number).toFixed(2)} W` : 'N/A', source: 'dynamic' },
+              { label: 'Freq', value: npuParsed?.frequency_mhz != null ? `${Math.round(npuParsed.frequency_mhz as number)} MHz` : 'N/A', source: 'dynamic' },
+            ]}
+            compact
+            centerBody
+            compactDetails
+            primaryChartHeight={68}
+            detailTopMargin={2}
+            sparkMode={sparkMode}
+            trendWindow={trendWindow}
+          />
+        </Col>
+
+        {gpuDevices.length === 0 ? null : [...gpuDevices].sort((a, b) => {
+          const aIsIgpu = a.label === 'iGPU' ? 0 : 1
+          const bIsIgpu = b.label === 'iGPU' ? 0 : 1
+          return aIsIgpu - bIsIgpu
+        }).map((device, index) => (
           <Col xs={24} md={12} xl={8} key={device.id}>
             <TrendPanel
               title={device.displayLabel}
@@ -3242,56 +3305,6 @@ export default function SystemOverview({ active }: Props) {
                   value: formatPercent(device.vramUsage),
                   source: 'dynamic',
                 },
-              ]}
-              sparkMode={sparkMode}
-              trendWindow={trendWindow}
-            />
-          </Col>
-        ))}
-
-        <Col xs={24} md={12} xl={8}>
-          <TrendPanel
-            title="NPU"
-            accent={PERF_COLORS.npu}
-            value={npuValue}
-            unit="%"
-            status={dynamicInfo ? (dynamicInfo.npu.npu_smi.available ? 'OK' : 'Offline') : undefined}
-            statusColor={dynamicInfo?.npu.npu_smi.available ? COLORS.green : COLORS.textMuted}
-            series={getSeries('npu:util')}
-            subtitle={npuSnapshotMeta}
-            details={[
-              { label: 'Util', value: formatPercent(npuUtilValue), source: 'dynamic' },
-              { label: 'Power', value: npuParsed?.power_w != null ? `${(npuParsed.power_w as number).toFixed(2)} W` : 'N/A', source: 'dynamic' },
-              { label: 'Freq', value: npuParsed?.frequency_mhz != null ? `${Math.round(npuParsed.frequency_mhz as number)} MHz` : 'N/A', source: 'dynamic' },
-            ]}
-            compact
-            centerBody
-            compactDetails
-            primaryChartHeight={68}
-            detailTopMargin={2}
-            sparkMode={sparkMode}
-            trendWindow={trendWindow}
-          />
-        </Col>
-
-        {diskDevices.map(([diskName, diskData]) => (
-          <Col xs={24} md={12} xl={8} key={diskName}>
-            <TrendPanel
-              title={`Disk: ${diskName}`}
-              accent={PERF_COLORS.disk}
-              value={normalizePercent(diskData.utilization)}
-              unit="%"
-              status={diskData.is_busy ? 'Busy' : 'OK'}
-              statusColor={diskData.is_busy ? COLORS.red : COLORS.green}
-              series={getSeries(`disk:${diskName}:util`)}
-              subtitle={diskSizeLookup[diskName] != null ? `${formatMetric(diskSizeLookup[diskName], 'GB', 1)}` : undefined}
-              details={[
-                { label: 'Size', value: formatMetric(diskSizeLookup[diskName], 'GB', 2), source: 'static' },
-                { label: 'Read', value: formatMetric(diskData.read_kb_per_sec, 'KB/s', 1), source: 'dynamic' },
-                { label: 'Write', value: formatMetric(diskData.write_kb_per_sec, 'KB/s', 1), source: 'dynamic' },
-                { label: 'Read IOPS', value: formatMetric(diskData.read_iops, 'IOPS', 1), source: 'dynamic' },
-                { label: 'Write IOPS', value: formatMetric(diskData.write_iops, 'IOPS', 1), source: 'dynamic' },
-                { label: 'Utilization', value: formatPercent(diskData.utilization), source: 'dynamic' },
               ]}
               sparkMode={sparkMode}
               trendWindow={trendWindow}

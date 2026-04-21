@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, DatePicker, Divider, Empty, Popover, Segmented, Select, Space, Typography, message } from 'antd'
-import { FilterOutlined, ReloadOutlined, SettingOutlined, DownOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Checkbox, DatePicker, Divider, Dropdown, Empty, Popover, Segmented, Select, Space, Tooltip as AntTooltip, Typography, message } from 'antd'
+import { DownloadOutlined, FilterOutlined, ReloadOutlined, SettingOutlined, DownOutlined } from '@ant-design/icons'
+import ExcelJS from 'exceljs'
 import {
   Brush,
   CartesianGrid,
@@ -258,8 +259,13 @@ const ALL_SECTIONS = SECTION_OPTIONS.map((o) => o.value)
 
 function normalizePercent(value: unknown): number | null {
   if (typeof value !== 'number' || Number.isNaN(value)) return null
-  if (value <= 1) return Math.max(0, Math.min(value * 100, 100))
   return Math.max(0, Math.min(value, 100))
+}
+
+// PSI pressure values come from /proc/pressure as 0-1 fractions; promote to %.
+function normalizePressureFraction(value: unknown): number | null {
+  if (typeof value !== 'number' || Number.isNaN(value)) return null
+  return Math.max(0, Math.min(value * 100, 100))
 }
 
 function toNumber(value: unknown): number | null {
@@ -304,9 +310,9 @@ function buildTimestamp(item: HistorySnapshotItem): { ts: number; label: string 
 }
 
 function getPressurePeak(dynamic: DynamicInfoData | null): number | null {
-  const pressureCpu = normalizePercent(dynamic?.pressure?.cpu)
-  const pressureMemory = normalizePercent(dynamic?.pressure?.memory)
-  const pressureIo = normalizePercent(dynamic?.pressure?.io)
+  const pressureCpu = normalizePressureFraction(dynamic?.pressure?.cpu)
+  const pressureMemory = normalizePressureFraction(dynamic?.pressure?.memory)
+  const pressureIo = normalizePressureFraction(dynamic?.pressure?.io)
   const values = [pressureCpu, pressureMemory, pressureIo].filter(isNumber)
   if (!values.length) return null
   return Math.max(...values)
@@ -320,8 +326,8 @@ function getNetworkUsage(dynamic: DynamicInfoData | null): number | null {
   if (utilization != null) return utilization
   // Fallback: NetworkMonitor rx/tx fractions (0-1) stored in the pressure section.
   const p = dynamic.pressure as { network_rx?: unknown; network_tx?: unknown } | undefined
-  const rx = normalizePercent(p?.network_rx)
-  const tx = normalizePercent(p?.network_tx)
+  const rx = normalizePressureFraction(p?.network_rx)
+  const tx = normalizePressureFraction(p?.network_tx)
   const vals = [rx, tx].filter((v): v is number => v != null)
   return vals.length > 0 ? Math.max(...vals) : null
 }
@@ -517,8 +523,8 @@ function buildNetworkTrendPoints(items: HistorySnapshotItem[]): { points: Networ
       for (const [name, val] of Object.entries(perNic)) {
         nicNameSet.add(name)
         if (val && typeof val === 'object') {
-          // per_nic.util is already a percentage (0-100) from backend; skip normalizePercent to avoid ×100 for values ≤1
-          point[`${name}:util`] = toNumber(val.util) ?? normalizePercent(val.rx != null || val.tx != null ? Math.max(val.rx ?? 0, val.tx ?? 0) : null)
+          const rxTxMax = val.rx != null || val.tx != null ? Math.max(val.rx ?? 0, val.tx ?? 0) : null
+          point[`${name}:util`] = toNumber(val.util) ?? normalizePressureFraction(rxTxMax)
           point[`${name}:rx`] = toNumber(val.rx_mbps) ?? null
           point[`${name}:tx`] = toNumber(val.tx_mbps) ?? null
           const sp = toNumber(val.speed_mbps)
@@ -1417,10 +1423,12 @@ export default function HistoryDashboard({ active }: Props) {
   }, [dynamicItems])
   const gpuTrendSeries = useMemo(() => {
     const raw = buildGpuTrendSeries(dynamicItems)
-    return raw.map((s) => ({
-      ...s,
-      points: downsampleLTTB(s.points, MAX_CHART_POINTS, (p) => Math.abs(p.utilization ?? 0) + Math.abs(p.vcs ?? 0) + Math.abs(p.vecs ?? 0) + Math.abs(p.gt0Act ?? 0) + Math.abs(p.gpuPower ?? 0)),
-    }))
+    return raw
+      .map((s) => ({
+        ...s,
+        points: downsampleLTTB(s.points, MAX_CHART_POINTS, (p) => Math.abs(p.utilization ?? 0) + Math.abs(p.vcs ?? 0) + Math.abs(p.vecs ?? 0) + Math.abs(p.gt0Act ?? 0) + Math.abs(p.gpuPower ?? 0)),
+      }))
+      .sort((a, b) => (a.isIntegrated ? 0 : 1) - (b.isIntegrated ? 0 : 1))
   }, [dynamicItems])
 
   const hasNpuData = useMemo(() => npuTrendPoints.some((p) => p.npuUtilization != null || p.npuFreqMhz != null || p.npuTemperatureC != null), [npuTrendPoints])
@@ -1462,6 +1470,326 @@ export default function HistoryDashboard({ active }: Props) {
     if (!start || !end) return 'Range: custom (select start/end)'
     return `Range: ${start.format('MM-DD HH:mm')} ~ ${end.format('MM-DD HH:mm')}`
   }, [rangePreset, customRange])
+
+  const exportBasename = useCallback(() => {
+    const stamp = dayjs().format('YYYYMMDD-HHmmss')
+    const range = rangePreset === 'custom' ? 'custom' : rangePreset
+    return `history-${range}-${stamp}`
+  }, [rangePreset])
+
+  const triggerDownload = useCallback((filename: string, blob: Blob) => {
+    try {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      messageApi.error(e instanceof Error ? e.message : 'Failed to export')
+    }
+  }, [messageApi])
+
+  const handleExportJSON = useCallback(() => {
+    if (dynamicItems.length === 0) {
+      messageApi.warning('No history data to export')
+      return
+    }
+    const payload = {
+      exported_at: dayjs().toISOString(),
+      range: rangePreset,
+      custom_range: rangePreset === 'custom' && customRange?.[0] && customRange?.[1]
+        ? { start: customRange[0].toISOString(), end: customRange[1].toISOString() }
+        : null,
+      count: dynamicItems.length,
+      items: dynamicItems,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+    triggerDownload(`${exportBasename()}.json`, blob)
+    messageApi.success(`Exported ${dynamicItems.length} snapshot(s) as JSON`)
+  }, [dynamicItems, rangePreset, customRange, exportBasename, triggerDownload, messageApi])
+
+  const handleExportXLSX = useCallback(async () => {
+    if (dynamicItems.length === 0) {
+      messageApi.warning('No history data to export')
+      return
+    }
+
+    const sorted = [...dynamicItems].sort((a, b) => (a.create_time || 0) - (b.create_time || 0))
+    const dyn = sorted.map((it) => ({ item: it, data: toDynamicData(it) }))
+
+    const wb = new ExcelJS.Workbook()
+    wb.creator = 'Resource Balancer Dashboard'
+    wb.created = new Date()
+
+    const tsColumns = (): Array<Partial<ExcelJS.Column>> => [
+      { header: 'id', key: 'id', width: 8 },
+      { header: 'timestamp', key: 'timestamp', width: 22 },
+      { header: 'unix_ts', key: 'unix_ts', width: 12 },
+    ]
+
+    const baseRow = (item: HistorySnapshotItem) => ({
+      id: item.id,
+      timestamp: item.create_time ? dayjs.unix(item.create_time).format('YYYY-MM-DD HH:mm:ss') : item.collected_at ?? '',
+      unix_ts: item.create_time,
+    })
+
+    const addSheet = (
+      name: string,
+      extraColumns: Array<Partial<ExcelJS.Column>>,
+      getExtras: (d: DynamicInfoData | null) => Record<string, unknown>,
+    ) => {
+      const sheet = wb.addWorksheet(name)
+      sheet.columns = [...tsColumns(), ...extraColumns]
+      sheet.getRow(1).font = { bold: true }
+      sheet.views = [{ state: 'frozen', ySplit: 1 }]
+      for (const { item, data } of dyn) {
+        sheet.addRow({ ...baseRow(item), ...getExtras(data) })
+      }
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────────
+    {
+      const sum = wb.addWorksheet('Summary')
+      sum.columns = [
+        { header: 'Field', key: 'k', width: 22 },
+        { header: 'Value', key: 'v', width: 60 },
+      ]
+      sum.getRow(1).font = { bold: true }
+      sum.addRows([
+        { k: 'Exported at', v: dayjs().format('YYYY-MM-DD HH:mm:ss') },
+        { k: 'Range preset', v: rangePreset },
+        { k: 'Custom range', v: rangePreset === 'custom' && customRange?.[0] && customRange?.[1]
+          ? `${customRange[0].format('YYYY-MM-DD HH:mm')} ~ ${customRange[1].format('YYYY-MM-DD HH:mm')}`
+          : '-' },
+        { k: 'Snapshot count', v: dynamicItems.length },
+        { k: 'First timestamp', v: sorted[0]?.create_time ? dayjs.unix(sorted[0].create_time).format('YYYY-MM-DD HH:mm:ss') : '-' },
+        { k: 'Last timestamp', v: sorted[sorted.length - 1]?.create_time ? dayjs.unix(sorted[sorted.length - 1].create_time).format('YYYY-MM-DD HH:mm:ss') : '-' },
+      ])
+    }
+
+    // ── CPU ───────────────────────────────────────────────────────────────
+    addSheet(
+      'CPU',
+      [
+        { header: 'util_pct', key: 'util', width: 10 },
+        { header: 'p_core_util_pct', key: 'p_util', width: 16 },
+        { header: 'e_core_util_pct', key: 'e_util', width: 16 },
+        { header: 'p_core_freq_mhz', key: 'p_freq', width: 16 },
+        { header: 'e_core_freq_mhz', key: 'e_freq', width: 16 },
+        { header: 'temperature_c', key: 'temp', width: 14 },
+      ],
+      (d) => ({
+        util: d?.cpu?.usage_total ?? null,
+        p_util: d?.cpu?.p_core_usage ?? null,
+        e_util: d?.cpu?.e_core_usage ?? null,
+        p_freq: d?.cpu?.p_core_freq_mhz ?? null,
+        e_freq: d?.cpu?.e_core_freq_mhz ?? null,
+        temp: d?.cpu?.temperature_c ?? null,
+      }),
+    )
+
+    // ── CPU Per-Core ──────────────────────────────────────────────────────
+    {
+      const coreCount = dyn.reduce((m, { data }) => {
+        const n = data?.cpu?.per_core_usage?.length ?? 0
+        return n > m ? n : m
+      }, 0)
+      if (coreCount > 0) {
+        let pIdx: Set<number> = new Set()
+        let eIdx: Set<number> = new Set()
+        for (const { data } of dyn) {
+          if (data?.cpu?.p_core_indices?.length) pIdx = new Set(data.cpu.p_core_indices)
+          if (data?.cpu?.e_core_indices?.length) eIdx = new Set(data.cpu.e_core_indices)
+          if (pIdx.size || eIdx.size) break
+        }
+        const coreType = (i: number) => pIdx.has(i) ? 'P' : eIdx.has(i) ? 'E' : 'Core'
+        const cols: Array<Partial<ExcelJS.Column>> = []
+        for (let i = 0; i < coreCount; i++) {
+          cols.push(
+            { header: `core${i}_type`, key: `c${i}_type`, width: 10 },
+            { header: `core${i}_util_pct`, key: `c${i}_util`, width: 14 },
+            { header: `core${i}_freq_mhz`, key: `c${i}_freq`, width: 14 },
+            { header: `core${i}_temp_c`, key: `c${i}_temp`, width: 14 },
+          )
+        }
+        addSheet('CPU Per-Core', cols, (d) => {
+          const row: Record<string, unknown> = {}
+          const usage = d?.cpu?.per_core_usage ?? []
+          const freq = d?.cpu?.per_core_freq_mhz ?? []
+          const temp = d?.cpu?.per_core_temperature_c ?? []
+          for (let i = 0; i < coreCount; i++) {
+            row[`c${i}_type`] = coreType(i)
+            row[`c${i}_util`] = usage[i] ?? null
+            row[`c${i}_freq`] = freq[i] ?? null
+            row[`c${i}_temp`] = temp[i] ?? null
+          }
+          return row
+        })
+      }
+    }
+
+    // ── Memory ────────────────────────────────────────────────────────────
+    addSheet(
+      'Memory',
+      [
+        { header: 'mem_util_pct', key: 'util', width: 14 },
+        { header: 'mem_total_gb', key: 'total', width: 14 },
+        { header: 'mem_available_gb', key: 'avail', width: 16 },
+        { header: 'swap_util_pct', key: 'swap', width: 14 },
+        { header: 'swap_total_gb', key: 'swap_total', width: 14 },
+      ],
+      (d) => ({
+        util: d?.memory?.usage_percent ?? null,
+        total: d?.memory?.total_gb ?? null,
+        avail: d?.memory?.available_gb ?? null,
+        swap: d?.memory?.swap_usage_percent ?? null,
+        swap_total: d?.memory?.swap_total_gb ?? null,
+      }),
+    )
+
+    // ── Pressure ──────────────────────────────────────────────────────────
+    addSheet(
+      'Pressure',
+      [
+        { header: 'cpu_pct', key: 'cpu', width: 10 },
+        { header: 'memory_pct', key: 'mem', width: 12 },
+        { header: 'io_pct', key: 'io', width: 10 },
+      ],
+      (d) => {
+        const p = d?.pressure as { cpu?: unknown; memory?: unknown; io?: unknown } | undefined
+        const num = (v: unknown) => (typeof v === 'number' ? v : null)
+        return { cpu: num(p?.cpu), mem: num(p?.memory), io: num(p?.io) }
+      },
+    )
+
+    // ── Network ───────────────────────────────────────────────────────────
+    {
+      const nicNames = new Set<string>()
+      for (const { data } of dyn) {
+        const ifs = data?.network?.interfaces ?? {}
+        Object.keys(ifs).forEach((n) => nicNames.add(n))
+      }
+      const nics = [...nicNames].sort()
+      const netCols: Array<Partial<ExcelJS.Column>> = [
+        { header: 'total_rx_bytes_per_sec', key: 'total_rx', width: 20 },
+        { header: 'total_tx_bytes_per_sec', key: 'total_tx', width: 20 },
+      ]
+      for (const n of nics) {
+        netCols.push(
+          { header: `${n}_rx_bytes_per_sec`, key: `${n}_rx`, width: 22 },
+          { header: `${n}_tx_bytes_per_sec`, key: `${n}_tx`, width: 22 },
+        )
+      }
+      addSheet('Network', netCols, (d) => {
+        const row: Record<string, unknown> = {
+          total_rx: d?.network?.total?.rx_bytes_per_sec ?? null,
+          total_tx: d?.network?.total?.tx_bytes_per_sec ?? null,
+        }
+        for (const n of nics) {
+          const ni = d?.network?.interfaces?.[n]
+          row[`${n}_rx`] = ni?.rx_bytes_per_sec ?? null
+          row[`${n}_tx`] = ni?.tx_bytes_per_sec ?? null
+        }
+        return row
+      })
+    }
+
+    // ── NPU ───────────────────────────────────────────────────────────────
+    if (dyn.some(({ data }) => getNpuUsage(data) != null)) {
+      addSheet(
+        'NPU',
+        [
+          { header: 'util_pct', key: 'util', width: 10 },
+        ],
+        (d) => ({ util: getNpuUsage(d) }),
+      )
+    }
+
+    // ── GPU: one sheet per device ────────────────────────────────────────
+    const maxDevices = dyn.reduce((m, { data }) => {
+      const n = data?.gpu?.gpu_usage?.parsed?.devices?.length ?? 0
+      return n > m ? n : m
+    }, 0)
+
+    const sheetLabels = new Map<number, string>()
+    for (let i = 0; i < maxDevices; i++) {
+      let role = `GPU${i}`
+      let pci = ''
+      for (const { data } of dyn) {
+        const dev = data?.gpu?.gpu_usage?.parsed?.devices?.[i]
+        if (!dev) continue
+        const t = (dev.dev_type || '').toLowerCase()
+        role = t.includes('integrated') || t.includes('igpu')
+          ? 'iGPU'
+          : t.includes('discrete') || t.includes('dgpu') ? 'dGPU' : `GPU${i}`
+        pci = dev.pci_dev || ''
+        break
+      }
+      // Excel sheet name: max 31 chars, cannot contain : \ / ? * [ ]
+      const raw = pci ? `GPU-${role}-${pci}` : `GPU-${role}-${i}`
+      const safe = raw.replace(/[:\\/?*[\]]/g, '-').slice(0, 31)
+      sheetLabels.set(i, safe)
+    }
+
+    // Sort: iGPU sheets first
+    const gpuOrder = Array.from({ length: maxDevices }, (_, i) => i).sort((a, b) => {
+      const la = sheetLabels.get(a) || ''
+      const lb = sheetLabels.get(b) || ''
+      const ai = la.includes('iGPU') ? 0 : 1
+      const bi = lb.includes('iGPU') ? 0 : 1
+      return ai - bi
+    })
+
+    for (const i of gpuOrder) {
+      const name = sheetLabels.get(i) || `GPU-${i}`
+      addSheet(
+        name,
+        [
+          { header: 'label', key: 'label', width: 28 },
+          { header: 'util_pct', key: 'util', width: 10 },
+          { header: 'rcs_pct', key: 'rcs', width: 10 },
+          { header: 'bcs_pct', key: 'bcs', width: 10 },
+          { header: 'vcs_pct', key: 'vcs', width: 10 },
+          { header: 'vecs_pct', key: 'vecs', width: 10 },
+          { header: 'ccs_pct', key: 'ccs', width: 10 },
+          { header: 'gt0_act_mhz', key: 'gt0_act', width: 14 },
+          { header: 'gt1_act_mhz', key: 'gt1_act', width: 14 },
+          { header: 'gt0_rc6_pct', key: 'gt0_rc6', width: 14 },
+          { header: 'gt1_rc6_pct', key: 'gt1_rc6', width: 14 },
+          { header: 'gpu_power_w', key: 'gpu_w', width: 14 },
+          { header: 'pkg_power_w', key: 'pkg_w', width: 14 },
+        ],
+        (d) => {
+          const dev = d?.gpu?.gpu_usage?.parsed?.devices?.[i]
+          if (!dev) return {}
+          const findFreq = (name: string) => (dev.freqs || []).find((f) => f.name === name)
+          return {
+            label: getGpuLabel(dev, i),
+            util: dev.utilization ?? null,
+            rcs: dev.engine_util?.rcs ?? null,
+            bcs: dev.engine_util?.bcs ?? null,
+            vcs: dev.engine_util?.vcs ?? null,
+            vecs: dev.engine_util?.vecs ?? null,
+            ccs: dev.engine_util?.ccs ?? null,
+            gt0_act: findFreq('gt0')?.act_mhz ?? null,
+            gt1_act: findFreq('gt1')?.act_mhz ?? null,
+            gt0_rc6: findFreq('gt0')?.rc6_pct ?? null,
+            gt1_rc6: findFreq('gt1')?.rc6_pct ?? null,
+            gpu_w: dev.power_w?.gpu ?? null,
+            pkg_w: dev.power_w?.pkg ?? dev.power_w?.card ?? null,
+          }
+        },
+      )
+    }
+
+    const buffer = await wb.xlsx.writeBuffer()
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    triggerDownload(`${exportBasename()}.xlsx`, blob)
+    messageApi.success(`Exported ${dynamicItems.length} snapshot(s) as Excel`)
+  }, [dynamicItems, rangePreset, customRange, exportBasename, triggerDownload, messageApi])
 
   return (
     <div style={{ padding: '16px 0' }}>
@@ -1506,9 +1834,14 @@ export default function HistoryDashboard({ active }: Props) {
             />
           )}
 
-          <Button icon={<ReloadOutlined />} onClick={() => fetchHistory()} disabled={rangePreset === 'custom' && !customRangeReady}>
-            Manual Refresh
-          </Button>
+          <AntTooltip title="Manual refresh">
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => fetchHistory()}
+              disabled={rangePreset === 'custom' && !customRangeReady}
+              aria-label="Manual refresh"
+            />
+          </AntTooltip>
 
           <Popover
             trigger="click"
@@ -1581,8 +1914,29 @@ export default function HistoryDashboard({ active }: Props) {
               </div>
             }
           >
-            <Button icon={<SettingOutlined />} />
+            <AntTooltip title="Retention settings">
+              <Button icon={<SettingOutlined />} aria-label="Retention settings" />
+            </AntTooltip>
           </Popover>
+
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                { key: 'xlsx', label: 'Export as Excel (.xlsx)' },
+                { key: 'json', label: 'Export as JSON' },
+              ],
+              onClick: ({ key }) => {
+                if (key === 'xlsx') handleExportXLSX()
+                else if (key === 'json') handleExportJSON()
+              },
+            }}
+            disabled={dynamicItems.length === 0}
+          >
+            <Button icon={<DownloadOutlined />} disabled={dynamicItems.length === 0}>
+              Export <DownOutlined style={{ fontSize: 10 }} />
+            </Button>
+          </Dropdown>
         </Space>
       </div>
 

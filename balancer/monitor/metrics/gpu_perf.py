@@ -102,6 +102,11 @@ def _get_or_init_monitor():
         from monitor.gpu_monitor import GPUMonitor
         monitor = GPUMonitor(xe_pmu=False)
         monitor.start_sampling()
+        # Sleep past one hwmon energy-counter refresh cycle (~50-100ms on xe
+        # dGPU) before returning, so the caller's first sample_delta() gets
+        # dt ≈ 0.2s against this baseline instead of a microsecond-gap delta,
+        # which would amplify a single counter tick into 1000s of watts.
+        time.sleep(0.2)
         _MONITOR_STATE["monitor"] = monitor
         logger.info("GPUMonitor initialized successfully (sysfs/fdinfo mode)")
         return monitor
