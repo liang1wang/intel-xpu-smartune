@@ -251,12 +251,18 @@ export default function Balance({ active }: Props) {
 
   const handleResourceLimit = (app: AppInfo) =>
     withLoading(`limit-${app.app_id}`, async () => {
-      await api.resourceLimit({
-        app_id: app.app_id,
-        app_name: app.app_name,
-        priority: rowPriorities[app.app_id] ?? app.priority ?? 'medium',
-      })
-      messageApi.success(`Resource limit applied to ${app.app_name}`)
+      try {
+        await api.resourceLimit({
+          app_id: app.app_id,
+          app_name: app.app_name,
+          priority: rowPriorities[app.app_id] ?? app.priority ?? 'medium',
+        })
+        messageApi.success(`Resource limit applied to ${app.app_name}`)
+      } catch (e: unknown) {
+        messageApi.warning(
+          `Cannot limit ${app.app_name}: resource usage is too low or the process is undetectable. Please choose another app.`
+        )
+      }
     })()
 
   const handleResourceRestore = (app: AppInfo) =>

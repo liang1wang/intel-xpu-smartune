@@ -40,10 +40,16 @@ class AppIntercept(metaclass=SingletonMeta):
         self.app_pending_queue = JoinableQueue(1000000)
         self.monitored_app_launched = {}  # 当前已经启动的监控app
         self.pending_exit_events = {}  # 待处理的退出事件（PID: Timer）
+        # Fast-lookup structures for get_main_process (rebuilt by _rebuild_match_cache)
+        self._comm_to_app: dict = {}          # comm_lower -> app_name  (O(1) bpf_name exact match)
+        self._filename_exe_to_app: dict = {}  # exe_lower  -> app_name  (filename path match)
+        self._fuzzy_fragments: list = []      # [(fragment_lower, app_name)]  (fuzzy fallback)
+        self._quick_filter: frozenset = frozenset()  # union of all above for pre-filtering
 
     def rebuild_controlled_map(self):
         self.controlled_app_map = app_utils.get_controlled_apps()
         self._rebuild_index()
+        self._rebuild_match_cache()
 
     def _rebuild_index(self):
         self._app_map_index = {
@@ -52,56 +58,79 @@ class AppIntercept(metaclass=SingletonMeta):
             if app.get("app_name") and app["app_name"].strip()
         }
 
+    def _rebuild_match_cache(self) -> None:
+        """Pre-build fast-lookup structures used by get_main_process.
+
+        Called whenever monitored_apps or the app config changes so that the
+        hot-path (print_event → get_main_process) never rebuilds these dicts
+        itself.
+        """
+        cnf_appname = self.controlManager.config.monitor_apps
+        app_executables = {
+            item['name']: item.get('bpf_name', []) for item in cnf_appname
+        }
+
+        comm_to_app: dict[str, str] = {}
+        filename_exe_to_app: dict[str, str] = {}
+        fuzzy_fragments: list[tuple[str, str]] = []
+
+        for app in self.monitored_apps:
+            for exe in app_executables.get(app, []):
+                exe_lower = exe.lower()
+                comm_to_app[exe_lower] = app
+                filename_exe_to_app[exe_lower] = app
+            app_lower = app.lower()
+            fuzzy_fragments.append((app_lower.replace(" ", "-"), app))
+            if " " in app_lower:
+                fuzzy_fragments.append((app_lower, app))
+
+        self._comm_to_app = comm_to_app
+        self._filename_exe_to_app = filename_exe_to_app
+        self._fuzzy_fragments = fuzzy_fragments
+        # Any string whose presence in comm or filename justifies a full match check
+        self._quick_filter = frozenset(
+            set(comm_to_app.keys()) |
+            set(filename_exe_to_app.keys()) |
+            {f for f, _ in fuzzy_fragments}
+        )
+
     def trace_print(self) -> None:
         self.bpf.trace_print()
 
     def get_main_process(self, comm: str, filename: str) -> tuple[bool, str]:
-        """检查是否是主进程"""
-        filename_lower = filename.lower()
+        """Check whether this execve event is the main process of a monitored app.
+
+        Uses pre-built lookup tables (_comm_to_app, _filename_exe_to_app,
+        _fuzzy_fragments) so no config access or dict construction occurs on the
+        hot path.
+        """
         comm_lower = comm.lower()
+        filename_lower = filename.lower()
 
-        # logger.debug(f"\n[DEBUG] Checking process - comm: {comm}, filename: {filename}")
-        # logger.debug(f"[DEBUG] Monitored apps: {self.monitored_apps}")
+        # O(1) comm exact match – covers process-title bpf_name entries
+        # (e.g. comm="mybench" while filename="python")
+        if comm_lower in self._comm_to_app:
+            return True, self._comm_to_app[comm_lower]
 
-        # 定义一些特殊的应用可执行文件名映射
-        cnf_appname = self.controlManager.config.monitor_apps
-        app_executables = {
-            item['name']: item['bpf_name'] for item in cnf_appname
-        }
-        # 先尝试自定义中匹配
-        app_flag = []
-        for app in self.monitored_apps:
-            # 检查是否有预定义的可执行文件名
-            executables = app_executables.get(app, [])
-            exact_match = any(
-                f"/{exe}" in filename_lower or filename_lower.endswith(f"/{exe}")
-                for exe in executables
-            )
+        # All remaining checks require the executable to live under a known
+        # /bin/ path or to be launched via bash, to avoid false positives on
+        # interpreter argv[0].
+        is_bin_path = any(x in filename_lower for x in ('/bin/', '/usr/bin/', '/snap/bin/'))
+        is_bash_launch = (comm_lower == 'bash')
+        if not is_bin_path and not is_bash_launch:
+            return False, ""
 
-            # 如果没有精确匹配，则使用原来的模糊匹配方式
-            if not exact_match:
-                exact_match = (
-                        app.lower().replace(" ", "-") in filename_lower or
-                        app.lower() in filename_lower
-                )
+        # Exact filename-path match against bpf_name entries
+        # (e.g. /usr/bin/llama-server with bpf_name=["llama-server"])
+        for exe, app in self._filename_exe_to_app.items():
+            if f"/{exe}" in filename_lower or filename_lower.endswith(f"/{exe}"):
+                return True, app
 
-            app_flag.append((app, exact_match))
+        # Fuzzy app-name match (app name appears as a substring of the path)
+        for fragment, app in self._fuzzy_fragments:
+            if fragment in filename_lower:
+                return True, app
 
-        special_flag = [x in filename_lower for x in ['/bin/', '/usr/bin/', '/snap/bin/']]
-        main_app = [app[0] for app in app_flag if app[1]]
-        is_bash_launch = (comm_lower == 'bash' and any(app[1] for app in app_flag))
-
-        # logger.debug(f"[DEBUG] app_flag results: {app_flag}")
-        # logger.debug(f"[DEBUG] special_flag: {special_flag}")
-        # logger.debug(f"[DEBUG] main_app: {main_app}")
-        # logger.debug(f"[DEBUG] is_bash_launch: {is_bash_launch}")
-
-        if (any(special_flag) and any(app[1] for app in app_flag)) or is_bash_launch:
-            result = True, main_app[0] if main_app else os.path.basename(filename)
-            # logger.debug(f"[DEBUG] Returning True: {result}")
-            return result
-
-        # logger.debug("[DEBUG] Returning False")
         return False, ""
 
     def is_process_alive(self, pid):
@@ -143,6 +172,15 @@ class AppIntercept(metaclass=SingletonMeta):
         # logger.debug(f"*** Event: PID={pid}, type={type} COMM={comm}, FILENAME={filename} ***")
 
         if type == 0: # 启动事件
+            comm_lower = comm.lower()
+            filename_lower = filename.lower()
+            # Fast pre-filter: skip the vast majority of unrelated BPF exec events
+            # without entering get_main_process at all.
+            if not (comm_lower in self._comm_to_app or
+                    any(c in filename_lower or c in comm_lower
+                        for c in self._quick_filter)):
+                return
+
             is_main_process, app_name = self.get_main_process(comm, filename)
             # logger.debug(f"Is this filename main process? {is_main_process}, app_name={app_name}")
             if is_main_process:
@@ -162,6 +200,14 @@ class AppIntercept(metaclass=SingletonMeta):
                             'purpose': "app"
                         }, True)
                     else:
+                        # Issue SIGSTOP as early as possible so the process is
+                        # frozen before it has a chance to consume significant
+                        # resources; handle_monitored_app then checks pressure
+                        # and decides whether to SIGCONT or queue it.
+                        try:
+                            os.kill(pid, signal.SIGSTOP)
+                        except OSError as e:
+                            logger.debug(f"SIGSTOP failed for PID {pid}: {e}")
                         self.handle_monitored_app(pid, comm, filename, app_name, app_id)
                     self.mark_process_handled(pid)
 
@@ -202,8 +248,9 @@ class AppIntercept(metaclass=SingletonMeta):
         logger.debug(f"Detected monitored app '{app_name}' (PID: {pid}, COMM: {comm}, FILE: {filename}, app_id: {app_id})")
 
         try:
-            os.kill(pid, signal.SIGSTOP)
-            # 检查系统资源get_current_pressure_level
+            # SIGSTOP has already been issued by the caller; evaluate system
+            # pressure and decide whether to resume the process immediately or
+            # defer it to the pending queue.
             pressure, *_ = self.controlManager.get_current_pressure_level()
             logger.debug(f"Current system pressure level: {pressure}")
             if pressure != "critical":
@@ -257,12 +304,14 @@ class AppIntercept(metaclass=SingletonMeta):
             logger.debug(f"All {len(names)} app(s) [{app_str}] already in monitoring list")
         elif added_count > 0:
             logger.debug(f"Successfully added {added_count}/{len(names)} new app(s)")
+            self._rebuild_match_cache()
 
     def remove_from_monitorlist(self, app_name: str) -> None:
         """从监控列表中移除应用"""
         if app_name in self.monitored_apps:
             self.monitored_apps.remove(app_name)
             logger.debug(f"Removed '{app_name}' from monitoring list")
+            self._rebuild_match_cache()
         else:
             logger.debug(f"'{app_name}' not found in monitoring list")
 
@@ -270,6 +319,7 @@ class AppIntercept(metaclass=SingletonMeta):
         """清空监控列表"""
         self.monitored_apps.clear()
         logger.debug("Cleared monitoring list")
+        self._rebuild_match_cache()
 
     def get_monitored_apps(self) -> List[str]:
         """获取当前监控的应用列表"""

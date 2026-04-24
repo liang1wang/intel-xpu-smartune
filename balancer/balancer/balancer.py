@@ -1072,8 +1072,23 @@ class DynamicBalancer:
         # Set limits based on usage and configured rates
         cpu_quota = int(cpu_usage_percent * limit_rates["cpu_rate"]) if (limit_rates.get("cpu_rate") and
                                                                          cpu_usage_percent > 0) else None
-        mem_high = int(mem_current * limit_rates["mem_rate"]) if limit_rates.get("mem_rate") else None
+        mem_high = int(mem_current * limit_rates["mem_rate"]) if (limit_rates.get("mem_rate") and mem_current > 0) else None
         io_limits = limit_rates.get("disk_io_rate", {})
+
+        # If there is nothing to limit (process undetectable or usage too low), notify the
+        # user so they can choose a different app to throttle, then bail out early.
+        no_cpu_limit = cpu_quota is None
+        no_mem_limit = mem_high is None
+        no_io_limit = not is_io_limit or not io_limits
+        if no_cpu_limit and no_mem_limit and no_io_limit:
+            reason = (
+                f"无法检测到 {app_name} 的资源使用情况，跳过限制。请选择其他应用进行限制。"
+                if not usage
+                else f"{app_name} 当前资源使用极低（CPU≤10%，内存≈0，IO<100 MB/s），无需限制。请选择其他应用。"
+            )
+            logger.warning(reason)
+            app_utils.safe_notify("资源限制跳过", reason, icon="dialog-warning")
+            return False
 
         logger.debug(f"Calculated limits - CPU: {cpu_quota if cpu_quota else 'No Limit'}, "
                      f"Memory: {mem_high if mem_high else 'No Limit'}, is_io_limit: {is_io_limit}")

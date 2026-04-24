@@ -195,6 +195,10 @@ class Controller:
             logger.warning(f"Invalid io_weight {io_weight}, no limit for io.")
             io_weight = None
 
+        # If there is nothing to apply (and this is not a restore), skip the systemctl call entirely.
+        if not is_restore and cpu_quota is None and mem_high is None and io_weight is None:
+            return True
+
         scopes = self.get_user_scopes()
         services = self.get_app_services()
 

@@ -5,6 +5,7 @@ import os
 import queue as _queue
 import re
 import subprocess
+import time
 import psutil
 import threading
 from getpass import getuser
@@ -478,81 +479,94 @@ def update_app_status(app_id: str, status: str) -> bool:
 
 
 def get_app_resource_usage(app_id: str, app_name: str) -> dict:
-    """Query the actual CPU, memory, and IO usage of a specific application"""
+    """Query the actual CPU, memory, and IO usage of a specific application via cgroup."""
     try:
         base_cgroup = "/sys/fs/cgroup"
         if hasattr(b_config, 'cgroup_mount') and b_config.cgroup_mount:
             base_cgroup = b_config.cgroup_mount
 
-        # Get all PIDs associated with the app name
+        # Find a representative PID to locate the cgroup.
+        # Try app_name first; if that yields nothing, fall back to app_id (e.g. "benchmark.py")
+        # so that processes whose argv[0] was renamed (e.g. via perl $0=) are still found.
         pids = get_app_processes(app_name)
+        if not pids and app_id:
+            pids = get_app_processes(os.path.basename(app_id))
         if not pids:
             print(f"No processes found for app {app_name} (ID: {app_id})")
             return {}
 
-        # Since application should be in the same cgroup, we can take the first PID to find the cgroup path
+        # Locate the cgroup from the first PID
         cgroup_path = get_cgroup_path_by_pid(pids[0])
         if not cgroup_path:
             print(f"No cgroup found for PID {pids[0]} of app {app_name}")
             return {}
 
-        all_pids = get_pids_in_cgroup(cgroup_path)
+        cgroup_dir = os.path.join(base_cgroup, cgroup_path.lstrip('/'))
+        num_cpus = os.cpu_count() or 1
 
-        cgroup_mem_current_file = os.path.join(base_cgroup, cgroup_path.lstrip('/'), "memory.current")
-        with open(cgroup_mem_current_file, 'r') as f:
-            cgroup_mem_total = int(f.read().strip())
+        # --- Instantaneous memory from cgroup memory.current ---
+        try:
+            with open(os.path.join(cgroup_dir, "memory.current"), 'r') as f:
+                cgroup_mem_bytes = int(f.read().strip())
+        except (FileNotFoundError, IOError, ValueError):
+            cgroup_mem_bytes = 0
 
-        logger.debug(f"App {app_name} (ID: {app_id}) - Found PIDs in cgroup: {all_pids}")
-
-        cpu_total = 0.0
-        mem_rss_total = 0
-        io_read_total = 0
-        io_write_total = 0
-        process_names = set()
-
-        # Acquire resource usage for all PIDs
-        for pid in all_pids:
+        # --- Helpers to sample cumulative cgroup counters ---
+        def read_cpu_usage_usec():
             try:
-                with psutil.Process(pid).oneshot():
-                    proc = psutil.Process(pid)
-                    cpu_total += proc.cpu_percent(interval=None)
-                    mem_info = proc.memory_info()
-                    mem_rss_total += mem_info.rss
+                with open(os.path.join(cgroup_dir, "cpu.stat"), 'r') as f:
+                    for line in f:
+                        if line.startswith('usage_usec'):
+                            return int(line.split()[1])
+            except (FileNotFoundError, IOError, ValueError):
+                pass
+            return 0
 
-                    try:
-                        io_counters = proc.io_counters()
-                        if io_counters:
-                            io_read_total += io_counters.read_bytes
-                            io_write_total += io_counters.write_bytes
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+        def read_io_bytes():
+            rbytes, wbytes = 0, 0
+            try:
+                with open(os.path.join(cgroup_dir, "io.stat"), 'r') as f:
+                    for line in f:
+                        parts = dict(p.split('=') for p in line.split() if '=' in p)
+                        rbytes += int(parts.get('rbytes', 0))
+                        wbytes += int(parts.get('wbytes', 0))
+            except (FileNotFoundError, IOError, ValueError):
+                pass
+            return rbytes, wbytes
 
-                    process_names.add(proc.name())
+        # Sample CPU and IO over a short window so we get accurate rates
+        t1 = time.monotonic()
+        cpu_usec1 = read_cpu_usage_usec()
+        io_rbytes1, io_wbytes1 = read_io_bytes()
+        time.sleep(0.5)
+        t2 = time.monotonic()
+        cpu_usec2 = read_cpu_usage_usec()
+        io_rbytes2, io_wbytes2 = read_io_bytes()
 
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        elapsed = t2 - t1
+        elapsed_usec = elapsed * 1_000_000
 
-        if not process_names:
-            print(f"No valid processes found for app {app_name} (ID: {app_id})")
-            return {}
+        cpu_percent = (
+            round(max(0.0, cpu_usec2 - cpu_usec1) / (elapsed_usec * num_cpus) * 100, 1)
+            if elapsed_usec > 0 else 0.0
+        )
+        io_read_mb_s = round(max(0.0, (io_rbytes2 - io_rbytes1) / elapsed / (1024 ** 2)), 2) if elapsed > 0 else 0.0
+        io_write_mb_s = round(max(0.0, (io_wbytes2 - io_wbytes1) / elapsed / (1024 ** 2)), 2) if elapsed > 0 else 0.0
+        mem_current_mb = round(cgroup_mem_bytes / (1024 ** 2), 2)
 
-        mem_current_mb = cgroup_mem_total / (1024 ** 2)  # MB
-        mem_rss_mb = mem_rss_total / (1024 ** 2)  # MB
-        io_read_mb = io_read_total / (1024 ** 2)  # MB
-        io_write_mb = io_write_total / (1024 ** 2)  # MB
-
-        logger.debug(f"Resource usage for {app_name} (ID: {app_id}): CPU={cpu_total:.1f}%, Memory_current={mem_current_mb:.2f}"
-                     f"MB (RSS={mem_rss_mb:.2f}MB), IO Read={io_read_mb:.2f}MB, IO Write={io_write_mb:.2f}MB")
+        all_pids = get_pids_in_cgroup(cgroup_path)
+        logger.debug(
+            f"Resource usage for {app_name} (ID: {app_id}): CPU={cpu_percent:.1f}%, "
+            f"Memory_current={mem_current_mb:.2f}MB, IO Read={io_read_mb_s:.2f}MB/s, IO Write={io_write_mb_s:.2f}MB/s"
+        )
         return {
             'pids': list(all_pids),
             'name': app_name,
             'cgroup_path': cgroup_path,
-            'cpu_percent': round(cpu_total, 1),
-            'mem_current': round(mem_current_mb, 2),
-            'mem_rss_mb': round(mem_rss_mb, 2),
-            'io_read_mb': round(io_read_mb, 2),
-            'io_write_mb': round(io_write_mb, 2),
-            'process_names': list(process_names)
+            'cpu_percent': cpu_percent,
+            'mem_current': mem_current_mb,
+            'io_read_mb': io_read_mb_s,
+            'io_write_mb': io_write_mb_s,
         }
     except Exception as e:
         print(f"Error getting resource usage for {app_name} (ID: {app_id}): {e}")

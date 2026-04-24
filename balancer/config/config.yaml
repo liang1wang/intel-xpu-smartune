@@ -33,6 +33,9 @@ all_apps:
   - name: "llama-server" # llama-server
     id: "llama-server"
     commandline: "./llama-server -m"
+  - name: "bm_ovqwen3-8b" # benchmark
+    id: "benchmark.py"
+    commandline: "python benchmark.py"
 weights_top:
   cpu: 2
   memory: 7
@@ -51,6 +54,8 @@ monitor_apps:  # Some specific apps to monitor by BPF
     bpf_name: [ "start-ollama.sh" ]
   - name: "llama-server"
     bpf_name: [ "llama-server" ]
+  - name: "bm_ovqwen3-8b"
+    bpf_name: [ "mybench" ]
 blacklist:
   - systemd
   - kworker
@@ -74,10 +79,10 @@ limit_policy: # 默认对不同优先级应用设置的资源限制比率
   memory:
     enabled: true
     rate:
-      high: 0.7  # MemoryHigh软限制
-      medium: 0.5
-      low: 0.4
-      undefined: 0.3
+      high: 0.5  # MemoryHigh软限制
+      medium: 0.3
+      low: 0.2
+      undefined: 0.1
   disk_io:  #
     enabled: true  # 是否启用磁盘 IO 限制，默认不对不同应用做统一的被动限制，推荐通过 API 为各应用配置差异化的主动限制
     rate:
