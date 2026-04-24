@@ -16,7 +16,7 @@ import json
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from flask import Blueprint, request
 
 import psutil
@@ -683,7 +683,21 @@ class SystemPressureMonitor:
         self._peak_level = None
         self._peak_disk_io_stressed = False
 
+        # Listeners notified when the system transitions into or out of the
+        # "critical" pressure level.  Each entry is a callable(is_critical: bool).
+        self._critical_state_listeners: list[Callable[[bool], None]] = []
+
         self._start_auto_refresh()
+
+    def register_critical_state_listener(self, callback) -> None:
+        """Register a callback invoked when system pressure enters or leaves the
+        "critical" level.
+
+        The callback receives a single bool: ``True`` when entering critical,
+        ``False`` when leaving.  Callbacks are fired from the auto-refresh
+        thread, so they must be thread-safe and non-blocking.
+        """
+        self._critical_state_listeners.append(callback)
 
     def set_limited_app_dominant(self, is_dominant: bool):
         """设置受限应用是否占主导状态"""
@@ -704,6 +718,7 @@ class SystemPressureMonitor:
         if self._update_lock.acquire(blocking=False):
             try:
                 new_level, score, disk_io_stressed, disk_io_stress = self._update_pressure_level()
+                old_level = self._current_level
                 self._current_level = new_level
                 self.score = score
                 self.is_current_disk_io_stressed = disk_io_stressed
@@ -716,6 +731,18 @@ class SystemPressureMonitor:
                     self._peak_disk_io_stressed = True
             finally:
                 self._update_lock.release()
+
+            # Notify listeners outside the lock to avoid re-entrant deadlock.
+            # We compare the old and new levels after releasing the lock; the
+            # transition flags are local, so they are safe to use here.
+            was_critical = (old_level == "critical")
+            is_critical = (new_level == "critical")
+            if was_critical != is_critical:
+                for cb in self._critical_state_listeners:
+                    try:
+                        cb(is_critical)
+                    except Exception as exc:
+                        logger.error("Critical state listener raised an error: %s", exc)
 
     def _update_pressure_level(self) -> tuple[str, float, bool, dict]:
         """更新压力等级（使用内部状态）"""

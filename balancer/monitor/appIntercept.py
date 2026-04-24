@@ -4,7 +4,7 @@
 import os
 import signal
 from multiprocessing import JoinableQueue
-from threading import Timer
+from threading import Event, Timer
 from typing import Any, List, Set, Union
 
 import psutil
@@ -46,10 +46,37 @@ class AppIntercept(metaclass=SingletonMeta):
         self._fuzzy_fragments: list = []      # [(fragment_lower, app_name)]  (fuzzy fallback)
         self._quick_filter: frozenset = frozenset()  # union of all above for pre-filtering
 
+        # Event-driven critical-mode flag.  Set by _on_critical_state_changed()
+        # when the system pressure monitor transitions into "critical" state;
+        # cleared when it leaves.  Used in print_event to avoid issuing SIGSTOP
+        # unless the system is actually under critical pressure.
+        self._system_critical = Event()
+        self.controlManager.register_critical_state_listener(self._on_critical_state_changed)
+        # Seed the flag from the current (possibly already cached) pressure level
+        # so that apps detected before the first monitor callback are handled
+        # correctly at startup.  The tuple is (level, score, is_disk_io_stressed).
+        initial_level, *_ = self.controlManager.get_current_pressure_level()
+        if initial_level == "critical":
+            self._system_critical.set()
+
     def rebuild_controlled_map(self):
         self.controlled_app_map = app_utils.get_controlled_apps()
         self._rebuild_index()
         self._rebuild_match_cache()
+
+    def _on_critical_state_changed(self, is_critical: bool) -> None:
+        """Callback invoked by SystemPressureMonitor when pressure enters or leaves critical.
+
+        Sets or clears the _system_critical event so that print_event can decide
+        whether to issue SIGSTOP without polling the pressure monitor on every
+        BPF exec event.
+        """
+        if is_critical:
+            self._system_critical.set()
+            logger.info("System pressure entered critical – low-priority app launches will be intercepted")
+        else:
+            self._system_critical.clear()
+            logger.info("System pressure left critical – low-priority app launch interception disabled")
 
     def _rebuild_index(self):
         self._app_map_index = {
@@ -200,15 +227,26 @@ class AppIntercept(metaclass=SingletonMeta):
                             'purpose': "app"
                         }, True)
                     else:
-                        # Issue SIGSTOP as early as possible so the process is
-                        # frozen before it has a chance to consume significant
-                        # resources; handle_monitored_app then checks pressure
-                        # and decides whether to SIGCONT or queue it.
-                        try:
-                            os.kill(pid, signal.SIGSTOP)
-                        except OSError as e:
-                            logger.debug(f"SIGSTOP failed for PID {pid}: {e}")
-                        self.handle_monitored_app(pid, comm, filename, app_name, app_id)
+                        # Only intercept (SIGSTOP) when the system is already in
+                        # critical pressure state.  If the system is idle the app
+                        # is allowed to start freely, avoiding the collateral
+                        # "Stopped" visible to the user that the previous
+                        # always-SIGSTOP pattern caused.
+                        if self._system_critical.is_set():
+                            try:
+                                os.kill(pid, signal.SIGSTOP)
+                            except OSError as e:
+                                logger.debug(f"SIGSTOP failed for PID {pid}: {e}")
+                            self.handle_monitored_app(pid, comm, filename, app_name, app_id)
+                        else:
+                            # System is not under critical pressure: let the app run.
+                            logger.debug("System not critical, allowing '%s' (PID: %s) to run freely", app_name, pid)
+                            app_utils.callback_manager.send_callback_notification({
+                                'app_id': app_id,
+                                'app_name': app_name,
+                                'status': "running",
+                                'purpose': "app"
+                            }, True)
                     self.mark_process_handled(pid)
 
         elif type == 1:  # 退出事件
@@ -245,15 +283,21 @@ class AppIntercept(metaclass=SingletonMeta):
         self.handled_processes.add(pid)
 
     def handle_monitored_app(self, pid: int, comm: str, filename: str, app_name: str, app_id: str) -> None:
+        """Handle a low-priority app that was launched while the system is under critical pressure.
+
+        This method is only called from print_event when _system_critical is set,
+        meaning SIGSTOP has already been issued.  It re-checks the event in case
+        the system recovered between the SIGSTOP and this point; if so, it issues
+        SIGCONT and lets the app run.  Otherwise it queues the app for deferred
+        resumption.
+        """
         logger.debug(f"Detected monitored app '{app_name}' (PID: {pid}, COMM: {comm}, FILE: {filename}, app_id: {app_id})")
 
         try:
-            # SIGSTOP has already been issued by the caller; evaluate system
-            # pressure and decide whether to resume the process immediately or
-            # defer it to the pending queue.
-            pressure, *_ = self.controlManager.get_current_pressure_level()
-            logger.debug(f"Current system pressure level: {pressure}")
-            if pressure != "critical":
+            # Re-check the critical flag: the monitor may have transitioned out
+            # of critical between the SIGSTOP in print_event and here.
+            if not self._system_critical.is_set():
+                logger.debug(f"System recovered before handling {app_name} (PID: {pid}), resuming")
                 os.kill(pid, signal.SIGCONT)
                 app_utils.callback_manager.send_callback_notification({
                     'app_id': app_id,

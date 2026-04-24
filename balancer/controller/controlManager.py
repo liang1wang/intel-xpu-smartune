@@ -26,6 +26,14 @@ class ControlManager:
 
         self._executor = ThreadPoolExecutor(max_workers=1)
 
+    def register_critical_state_listener(self, callback) -> None:
+        """Register a callback invoked when system pressure enters or leaves critical.
+
+        Forwarded to the underlying SystemPressureMonitor.  See
+        SystemPressureMonitor.register_critical_state_listener for details.
+        """
+        self.system_pressure_monitor.register_critical_state_listener(callback)
+
     def set_limited_app_dominant(self, is_dominant: bool):
         """ Set whether the limited app is dominant. """
         self.system_pressure_monitor.set_limited_app_dominant(is_dominant)
