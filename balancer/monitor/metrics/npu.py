@@ -25,6 +25,9 @@ from monitor.intel_npu_smi import PmtTelemetry, get_npu_processes
 from utils.logger import logger
 
 
+_pmt_init_warned = False
+
+
 def get_npu_names() -> List[str]:
     output = run_cmd(["lspci", "-nn"])
     if not output:
@@ -126,6 +129,7 @@ def _collect_npu_smi_once(include_processes: bool = False) -> Dict[str, Any]:
     if dev_path is None:
         return {"available": False, "raw": None, "error": "No Intel NPU PCI device found"}
 
+    global _pmt_init_warned
     telemetry: Optional[PmtTelemetry] = None
     pmt_error: Optional[str] = None
     try:
@@ -134,8 +138,9 @@ def _collect_npu_smi_once(include_processes: bool = False) -> Dict[str, Any]:
         pmt_error = f"PmtTelemetry init failed: {exc}"
     except Exception as exc:
         pmt_error = f"PmtTelemetry init failed: {exc}"
-    if pmt_error:
-        logger.debug(pmt_error)
+    if pmt_error and not _pmt_init_warned:
+        logger.debug(pmt_error + " (this message will be suppressed on subsequent polls)")
+        _pmt_init_warned = True
 
     npu_busy_path = os.path.join(dev_path, "npu_busy_time_us")
 
