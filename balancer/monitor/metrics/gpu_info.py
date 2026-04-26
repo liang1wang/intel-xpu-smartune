@@ -29,6 +29,51 @@ def get_gpu_cards() -> List[str]:
     return [c for c in cards if os.path.isdir(c)]
 
 
+# Cached card_name -> 'GPU.N' mapping.  The DRM topology is static for the
+# life of the process, so we compute each label once on first access and reuse
+# the result on subsequent calls.
+_gpu_label_cache: Dict[str, str] = {}
+
+
+def card_to_gpu_label(card: str) -> str:
+    """Map a DRM card path or name (e.g. '/sys/class/drm/card0' or 'card0') to
+    the public-facing 'GPU.N' label, where N is derived from the paired
+    renderD node (N = renderD_number - 128).  Card and render node are matched
+    by shared PCI device.  This matches OpenCL / Level Zero enumeration order
+    which follows /dev/dri/renderD* openings.
+
+    Falls back to the original card name when no render node is found or the
+    input is not a recognisable 'cardN'.
+    """
+    card_name = os.path.basename(card)
+    cached = _gpu_label_cache.get(card_name)
+    if cached is not None:
+        return cached
+
+    label = card_name
+    try:
+        card_pci = os.path.realpath(f"/sys/class/drm/{card_name}/device")
+        entries = os.listdir("/sys/class/drm")
+        for name in entries:
+            if not name.startswith("renderD"):
+                continue
+            try:
+                render_pci = os.path.realpath(f"/sys/class/drm/{name}/device")
+            except OSError:
+                continue
+            if render_pci == card_pci:
+                try:
+                    label = f"GPU.{int(name[len('renderD'):]) - 128}"
+                except ValueError:
+                    pass
+                break
+    except OSError:
+        pass
+
+    _gpu_label_cache[card_name] = label
+    return label
+
+
 def get_gpu_names() -> List[str]:
     output = run_cmd(["lspci", "-nn"])
     if not output:
@@ -43,7 +88,7 @@ def get_gpu_names() -> List[str]:
 def get_gpu_engines(cards: List[str]) -> Dict[str, List[str]]:
     engines: Dict[str, List[str]] = {}
     for card in cards:
-        card_name = os.path.basename(card)
+        gpu_label = card_to_gpu_label(card)
 
         driver = get_gpu_driver_name(card)
 
@@ -57,7 +102,7 @@ def get_gpu_engines(cards: List[str]) -> Dict[str, List[str]]:
                     name = safe_read(name_path)
                     names.append(name or entry)
                 if names:
-                    engines[card_name] = names
+                    engines[gpu_label] = names
 
         elif driver == "xe":
             # Xe: /sys/class/drm/cardX/device/tile*/gt*/engines/ has class dirs (bcs, ccs, ...)
@@ -73,7 +118,7 @@ def get_gpu_engines(cards: List[str]) -> Dict[str, List[str]]:
                 except OSError:
                     continue
             if xe_names:
-                engines[card_name] = xe_names
+                engines[gpu_label] = xe_names
 
     return engines
 
@@ -153,7 +198,7 @@ def get_gpu_freq_bounds(cards: List[str]) -> Dict[str, Dict[str, Optional[float]
         min_val = read_first_existing(min_paths)
         max_val = read_first_existing(max_paths)
         if min_val or max_val:
-            result[os.path.basename(card)] = {
+            result[card_to_gpu_label(card)] = {
                 "min_mhz": parse_freq_val(min_val),
                 "max_mhz": parse_freq_val(max_val),
             }
@@ -179,7 +224,7 @@ def get_gpu_gt_freq_bounds_sysfs(
     result: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
 
     for card in cards:
-        card_name = os.path.basename(card)
+        gpu_label = card_to_gpu_label(card)
         driver = get_gpu_driver_name(card)
         gt_bounds: Dict[str, Dict[str, Optional[float]]] = {}
 
@@ -216,7 +261,7 @@ def get_gpu_gt_freq_bounds_sysfs(
                     }
 
         if gt_bounds:
-            result[card_name] = gt_bounds
+            result[gpu_label] = gt_bounds
 
     return result
 
@@ -306,20 +351,21 @@ def get_gpu_vram(cards: List[str]) -> Dict[str, Dict[str, Optional[float]]]:
 
     for card in cards:
         card_name = os.path.basename(card)
+        gpu_label = card_to_gpu_label(card)
         match = re.match(r"^card(\d+)$", card_name)
 
         if match:
             card_index = int(match.group(1))
             xe_vram = _parse_debugfs_vram_mm(card_index)
             if xe_vram:
-                result[card_name] = xe_vram
+                result[gpu_label] = xe_vram
                 continue
             i915_vram = _parse_i915_gem_objects_vram(card_index)
             if i915_vram:
-                result[card_name] = i915_vram
+                result[gpu_label] = i915_vram
                 continue
 
-        result[card_name] = {
+        result[gpu_label] = {
             "total_bytes": system_memory_stats.get("total_bytes"),
             "used_bytes": system_memory_stats.get("used_bytes"),
             "usage_percent": system_memory_stats.get("usage_percent"),
@@ -332,6 +378,7 @@ def get_igpu_eu_count(cards: List[str]) -> Dict[str, Optional[int]]:
     result: Dict[str, Optional[int]] = {}
     for card in cards:
         card_name = os.path.basename(card)
+        gpu_label = card_to_gpu_label(card)
         match = re.match(r"^card(\d+)$", card_name)
         if not match:
             continue
@@ -345,14 +392,14 @@ def get_igpu_eu_count(cards: List[str]) -> Dict[str, Optional[int]]:
                     content = f.read()
                 eu_match = re.search(r"(?m)^\s*Available EU Total:\s*(\d+)", content)
                 if eu_match:
-                    result[card_name] = int(eu_match.group(1))
+                    result[gpu_label] = int(eu_match.group(1))
             except FileNotFoundError:
                 pass
             except Exception as exc:
                 logger.debug("Read failed for %s: %s", path, exc)
 
         elif driver == "xe":
-            result[card_name] = None
+            result[gpu_label] = None
 
     return result
 
@@ -367,7 +414,7 @@ def get_gpu_pcie(cards: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
         max_width = safe_read(os.path.join(base, "max_link_width"))
         has_real_speed = (current_speed and "GT/s" in current_speed) or (max_speed and "GT/s" in max_speed)
         if has_real_speed:
-            result[os.path.basename(card)] = {
+            result[card_to_gpu_label(card)] = {
                 "current_speed": current_speed,
                 "current_width": current_width,
                 "max_speed": max_speed,
@@ -377,7 +424,7 @@ def get_gpu_pcie(cards: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
 
 
 def get_gpu_pci_addresses(cards: List[str]) -> Dict[str, str]:
-    """Return mapping of cardKey -> PCI address (e.g. card0 -> 0000:00:02.0)."""
+    """Return mapping of GPU label -> PCI address (e.g. GPU.0 -> 0000:00:02.0)."""
     result: Dict[str, str] = {}
     for card in cards:
         device_path = os.path.join(card, "device")
@@ -385,7 +432,7 @@ def get_gpu_pci_addresses(cards: List[str]) -> Dict[str, str]:
             resolved = os.path.realpath(device_path)
             pci_addr = os.path.basename(resolved)
             if re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", pci_addr):
-                result[os.path.basename(card)] = pci_addr
+                result[card_to_gpu_label(card)] = pci_addr
         except Exception:
             pass
     return result

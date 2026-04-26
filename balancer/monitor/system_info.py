@@ -52,6 +52,7 @@ from monitor.metrics.gpu_info import (
     get_igpu_eu_count,
     get_gpu_pcie,
     get_gpu_pci_addresses,
+    card_to_gpu_label,
 )
 from monitor.metrics.npu import (
     get_npu_names,
@@ -623,7 +624,7 @@ def collect_static_info(force_refresh: bool = False) -> Dict[str, Any]:
                 "pcie": get_gpu_pcie(cards),
                 "eu_count": get_igpu_eu_count(cards),
                 "pci_addresses": gpu_pci_addresses,
-                "driver_names": {os.path.basename(c): get_gpu_driver_name(c) for c in cards},
+                "driver_names": {card_to_gpu_label(c): get_gpu_driver_name(c) for c in cards},
             },
             "npu": {
                 "names": get_npu_names(),

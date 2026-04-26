@@ -269,10 +269,46 @@ def get_format_shift(device, param):
 # Driver detection
 # ---------------------------------------------------------------------------
 
+def _card_to_gpu_label(card_name):
+    """Map a DRM 'cardN' name to the public 'GPU.N' label via the paired
+    renderD node (N = renderD_number - 128).  Matching is by shared PCI
+    device.  Falls back to the input name when no render node is found.
+    Duplicated (intentionally) with monitor.metrics.gpu_info.card_to_gpu_label
+    so that gpu_monitor.py remains runnable as a standalone script
+    (`sudo python3 gpu_monitor.py`) without package imports.
+    """
+    try:
+        card_pci = os.path.realpath(f"/sys/class/drm/{card_name}/device")
+    except OSError:
+        return card_name
+    try:
+        entries = os.listdir("/sys/class/drm")
+    except OSError:
+        return card_name
+    for name in entries:
+        if not name.startswith("renderD"):
+            continue
+        try:
+            render_pci = os.path.realpath(f"/sys/class/drm/{name}/device")
+        except OSError:
+            continue
+        if render_pci == card_pci:
+            try:
+                return f"GPU.{int(name[len('renderD'):]) - 128}"
+            except ValueError:
+                return card_name
+    return card_name
+
+
 def detect_gpu_devices():
     """Detect Intel GPU devices and their drivers.
 
-    Returns list of dicts: {card, driver, pci_slot, device_name}
+    Returns list of dicts: {card, gpu_label, driver, pci_slot, device_name, is_integrated}
+
+    The 'card' field is the kernel DRM node name (e.g. 'card0') used for sysfs
+    path construction.  The 'gpu_label' field is the user-facing name (e.g.
+    'GPU.0') that matches OpenCL / Level Zero enumeration order; consumers
+    building user-facing output should use gpu_label.
     """
     devices = []
     drm_dir = Path("/sys/class/drm")
@@ -327,7 +363,8 @@ def detect_gpu_devices():
                                  segments[-1].startswith("02."))
 
         devices.append({
-            "card": card_name,
+            "card": card_name,                        # sysfs dir name, e.g. "card0"
+            "gpu_label": _card_to_gpu_label(card_name),  # public label, e.g. "GPU.0"
             "driver": driver,
             "pci_slot": pci_slot or "unknown",
             "device_name": device_name,
@@ -810,7 +847,8 @@ class I915Monitor:
 
     def __init__(self, device_info):
         self.device_name = device_info["device_name"]
-        self.card = device_info["card"]
+        self.card = device_info["card"]                                  # sysfs dir: "card0"
+        self.gpu_label = device_info.get("gpu_label", self.card)         # public: "GPU.0"
         self.pci_slot = device_info["pci_slot"]
         self.type_id = get_pmu_type(self.device_name)
         self.is_discrete = not device_info.get("is_integrated", False)
@@ -988,7 +1026,7 @@ class I915Monitor:
         dt_s = dt_ns / 1e9
         result = {
             "driver": "i915",
-            "card": self.card,
+            "card": self.gpu_label,
             "pci_slot": self.pci_slot,
             "period_ms": dt_ns / 1e6,
             "is_integrated": not self.is_discrete,
@@ -1142,7 +1180,8 @@ class XeMonitor:
 
     def __init__(self, device_info, use_pmu=False):
         self.device_name = device_info["device_name"]
-        self.card = device_info["card"]
+        self.card = device_info["card"]                                  # sysfs dir: "card0"
+        self.gpu_label = device_info.get("gpu_label", self.card)         # public: "GPU.0"
         self.pci_slot = device_info["pci_slot"]
         self.is_discrete = not device_info.get("is_integrated", False)
         self.use_pmu = use_pmu
@@ -1402,7 +1441,7 @@ class XeMonitor:
 
         result = {
             "driver": "xe",
-            "card": self.card,
+            "card": self.gpu_label,
             "pci_slot": self.pci_slot,
             "period_ms": dt_ns / 1e6,
             "is_integrated": not self.is_discrete,
