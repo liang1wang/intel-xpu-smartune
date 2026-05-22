@@ -9,6 +9,7 @@ import subprocess # nosec
 from typing import Optional, List, Dict, Union
 from config.config import b_config
 from utils.logger import logger
+from utils.app_utils import build_sudo_shell_redirect
 
 # Reserved
 class IOController:
@@ -65,7 +66,7 @@ class IOController:
                 success = False
                 continue
 
-            cmd = ["sudo", "sh", "-c", f"echo '+io' > {path}"]
+            cmd = build_sudo_shell_redirect("+io", path)
             if not self._run_cmd(cmd):
                 success = False
 
@@ -165,7 +166,7 @@ class IOController:
                     if 'io' in f.read().split():
                         continue
 
-                cmd = ["sudo", "sh", "-c", f"echo '+io' > {control_file}"]
+                cmd = build_sudo_shell_redirect("+io", control_file)
                 logger.info(f"Enabling IO controller at {control_file}")
                 if not self._run_cmd(cmd):
                     logger.info(f"Failed to enable IO at {control_file}")
@@ -281,7 +282,11 @@ class IOController:
                         success = False
                         continue
 
-                cmd = f"sudo sh -c 'echo \"{disk_id} {limit_str}\" > {io_max_path}'"
+                # Build command based on vendor config
+                if getattr(self.config, "vendor", "generic") == "generic":
+                    cmd = f"sudo sh -c 'echo \"{disk_id} {limit_str}\" > {io_max_path}'"
+                else:
+                    cmd = f"sh -c 'echo \"{disk_id} {limit_str}\" > {io_max_path}'"
                 logger.info(f"Setting IO limits for cgroup: {cgroup_id} in disk {disk_name}({disk_id}): {limit_str}")
 
                 if is_restore:
@@ -356,7 +361,7 @@ class IOController:
             return False
 
         logger.info(f"Setting IO weight to {weight} for cgroup {cgroup_id}")
-        cmd = ["sudo", "sh", "-c", f"echo '{weight}' > {io_weight_path}"]
+        cmd = build_sudo_shell_redirect(str(weight), io_weight_path)
         return self._run_cmd(cmd)
 
     def get_current_io_limits(self, cgroup_id: str) -> Optional[tuple[int, int, int, int]]:

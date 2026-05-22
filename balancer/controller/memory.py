@@ -9,6 +9,8 @@ from controller.base import ControllerBase
 import subprocess # nosec
 
 from utils.logger import logger
+from utils.app_utils import build_sudo_cmd, build_sudo_shell_redirect
+from config.config import b_config
 
 # Reserved
 class MemoryController(ControllerBase):
@@ -22,10 +24,11 @@ class MemoryController(ControllerBase):
     def set_managed_oom_pressure(self, user_service: str = "user@1000.service", oom_pressure: str = "auto") -> bool:
         """Control of systemd OOM will take over in the Balancer, so set the default value from kill to auto"""
         try:
-            cmd = [
-                'sudo', 'systemctl', 'set-property', '--runtime',
+            cmd_base = [
+                'systemctl', 'set-property', '--runtime',
                 user_service, f'ManagedOOMMemoryPressure={oom_pressure}'
             ]
+            cmd = build_sudo_cmd(cmd_base)
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
@@ -40,7 +43,8 @@ class MemoryController(ControllerBase):
         try:
             path = os.path.join(self.get_full_path(cgroup), param)
             logger.debug(f"mem set_parameter path = {path}")
-            os.system(f"echo {value} > sudo {path}")
+            cmd = build_sudo_shell_redirect(value, path)
+            subprocess.run(cmd, capture_output=True)
             return True
         except (FileNotFoundError, PermissionError) as e:
             logger.error(f"Failed to set {param}={value}: {e}")

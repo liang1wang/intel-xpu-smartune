@@ -4,6 +4,9 @@
 import os
 from controller.base import ControllerBase
 from utils.logger import logger
+from utils.app_utils import build_sudo_shell_redirect
+import subprocess
+from config.config import b_config
 
 # Reserved
 class CPUController(ControllerBase):
@@ -39,7 +42,8 @@ class CPUController(ControllerBase):
         try:
             path = os.path.join(self.get_full_path(cgroup), param)
             logger.debug(f"cpu set_parameter path = {path}")
-            os.system(f"echo {value} > sudo {path}")
+            cmd = build_sudo_shell_redirect(value, path)
+            subprocess.run(cmd, capture_output=True)
             return True
         except (FileNotFoundError, PermissionError) as e:
             logger.error(f"Failed to set {param}={value}: {e}")

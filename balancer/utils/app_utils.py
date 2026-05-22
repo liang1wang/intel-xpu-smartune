@@ -20,6 +20,32 @@ from gi.repository import Gio
 
 _original_oom_scores: dict[str, str] = {}
 
+
+def build_sudo_cmd(base_cmd: List[str]) -> List[str]:
+    """
+    Build command with or without sudo based on vendor configuration.
+
+    :param base_cmd: The base command as a list
+    :return: Command list with sudo prepended if vendor is "generic", otherwise original command
+    """
+    if getattr(b_config, "vendor", "generic") == "generic":
+        return ["sudo"] + base_cmd
+    return base_cmd
+
+
+def build_sudo_shell_redirect(content: str, target_file: str) -> List[str]:
+    """
+    Build a shell redirection command with or without sudo based on vendor configuration.
+
+    :param content: The content to write (e.g., "+io", "100")
+    :param target_file: The target file path
+    :return: Command list for shell redirection
+    """
+    shell_cmd = f"echo '{content}' > {target_file}"
+    if getattr(b_config, "vendor", "generic") == "generic":
+        return ["sudo", "sh", "-c", shell_cmd]
+    return ["sh", "-c", shell_cmd]
+
 class ClientCallbackManager:
     """Manages global state and operations for client-side callbacks."""
     _instance = None
@@ -251,7 +277,8 @@ def check_pids_disk_io_usage(running_pids: List[int], threshold_mb: float = 100.
     try:
         sample_times, sample_interval = 3, 0.2
 
-        iotop_cmd = ["sudo", "iotop", "-b", "-o", "-k", "-n", str(sample_times), "-d", str(sample_interval)]
+        iotop_base = ["iotop", "-b", "-o", "-k", "-n", str(sample_times), "-d", str(sample_interval)]
+        iotop_cmd = build_sudo_cmd(iotop_base)
         for pid in running_pids:
             iotop_cmd.extend(["-p", str(pid)])
 

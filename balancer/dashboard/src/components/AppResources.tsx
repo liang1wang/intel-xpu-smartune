@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import {
   Table,
   Tag,
@@ -11,13 +11,16 @@ import {
   Row,
   Col,
   Button,
+  Modal,
+  Form,
+  InputNumber,
+  message,
 } from 'antd'
-import { ReloadOutlined, ThunderboltOutlined, SettingOutlined } from '@ant-design/icons'
+import { ReloadOutlined, ThunderboltOutlined, SettingOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { COLORS } from '../styles/theme'
 import { api } from '../api/client'
 import type { AppResourceEntry, AppDiskIoEntry } from '../api/types'
-import SettingsModal from './SettingsModal'
 import { usePolling } from '../hooks/usePolling'
 
 const { Text, Title } = Typography
@@ -56,6 +59,174 @@ function formatBytes(mb: number): string {
   if (mb < 1) return `${(mb * 1024).toFixed(0)} KB/s`
   return `${mb.toFixed(1)} MB/s`
 }
+
+
+// ========== Settings Modal Component ==========
+
+interface WeightsConfig {
+  cpu: number
+  memory: number
+  gpu: number
+}
+
+interface SettingsModalProps {
+  visible: boolean
+  onClose: () => void
+}
+
+function SettingsModal({ visible, onClose }: SettingsModalProps) {
+  const [form] = Form.useForm()
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [initialValues, setInitialValues] = useState<WeightsConfig | null>(null)
+
+  useEffect(() => {
+    if (visible) {
+      loadWeights()
+    }
+  }, [visible])
+
+  const loadWeights = async () => {
+    setLoading(true)
+    try {
+      const weights = await api.getWeightsTop()
+      setInitialValues(weights)
+      form.setFieldsValue(weights)
+    } catch (error) {
+      message.error('Failed to load weights configuration')
+      console.error(error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields()
+      setSaving(true)
+
+      const response = await api.updateWeightsTop(values)
+
+      if (response.success) {
+        message.success('Weights configuration updated successfully')
+        setInitialValues(response.updated_weights)
+        onClose()
+      } else {
+        message.error('Failed to update weights configuration')
+      }
+    } catch (error) {
+      message.error('Failed to save weights configuration')
+      console.error(error)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleReset = () => {
+    if (initialValues) {
+      form.setFieldsValue(initialValues)
+    }
+  }
+
+  return (
+    <Modal
+      title={
+        <Space>
+          <SettingOutlined style={{ color: COLORS.accent }} />
+          <span>Score Weights Configuration</span>
+        </Space>
+      }
+      open={visible}
+      onCancel={onClose}
+      footer={[
+        <Button key="reset" icon={<ReloadOutlined />} onClick={handleReset}>
+          Reset
+        </Button>,
+        <Button key="cancel" onClick={onClose}>
+          Cancel
+        </Button>,
+        <Button
+          key="save"
+          type="primary"
+          icon={<SaveOutlined />}
+          loading={saving}
+          onClick={handleSave}
+        >
+          Save
+        </Button>,
+      ]}
+      width={600}
+    >
+      <div style={{ marginBottom: 16 }}>
+        <Text type="secondary">
+          Configure the weight of each resource type in the Top Resource Consumers score calculation.
+          Higher weights give more importance to that resource when ranking applications by combined CPU, Memory, and GPU usage.
+        </Text>
+        <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+          Note: Disk I/O is ranked separately in the Top Disk I/O Consumer section and does not use these weights.
+        </Text>
+      </div>
+
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={initialValues || undefined}
+      >
+        <Form.Item
+          label="CPU Weight"
+          name="cpu"
+          rules={[
+            { required: true, message: 'CPU weight is required' },
+            { type: 'integer', min: 0, message: 'Must be a non-negative integer' },
+          ]}
+        >
+          <InputNumber
+            style={{ width: '100%' }}
+            min={0}
+            placeholder="Enter CPU weight"
+            disabled={loading}
+          />
+        </Form.Item>
+
+        <Form.Item
+          label="Memory Weight"
+          name="memory"
+          rules={[
+            { required: true, message: 'Memory weight is required' },
+            { type: 'integer', min: 0, message: 'Must be a non-negative integer' },
+          ]}
+        >
+          <InputNumber
+            style={{ width: '100%' }}
+            min={0}
+            placeholder="Enter memory weight"
+            disabled={loading}
+          />
+        </Form.Item>
+
+<Form.Item
+          label="GPU Weight"
+          name="gpu"
+          rules={[
+            { required: true, message: 'GPU weight is required' },
+            { type: 'integer', min: 0, message: 'Must be a non-negative integer' },
+          ]}
+          extra="Added to the default score as a secondary factor after GPU data is collected"
+        >
+          <InputNumber
+            style={{ width: '100%' }}
+            min={0}
+            placeholder="Enter GPU weight"
+            disabled={loading}
+          />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
+
+// ========== Main Component ==========
 
 export default function AppResources({ active }: Props) {
   const [rows, setRows] = useState<AppRow[]>([])
