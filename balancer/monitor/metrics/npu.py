@@ -1,15 +1,5 @@
-#
-#  Copyright (C) 2025 Intel Corporation
-#
-#  This software and the related documents are Intel copyrighted materials,
-#  and your use of them is governed by the express license under which they
-#  were provided to you ("License"). Unless the License provides otherwise,
-#  you may not use, modify, copy, publish, distribute, disclose or transmit
-#  his software or the related documents without Intel's prior written permission.
-#
-#  This software and the related documents are provided as is, with no express
-#  or implied warranties, other than those that are expressly stated in the License.
-#
+# Copyright (c) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 
 """NPU subsystem: discovery, device info, frequency bounds, and SMI telemetry."""
 
@@ -21,7 +11,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from monitor.metrics.utils import safe_read, run_cmd
-from monitor.intel_npu_smi import PmtTelemetry, get_npu_processes
+from monitor.npu_monitor import PmtTelemetry, get_npu_processes
 from utils.logger import logger
 
 

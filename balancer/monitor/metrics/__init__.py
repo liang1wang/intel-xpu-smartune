@@ -1,3 +1,2 @@
-#
-#  Copyright (C) 2025 Intel Corporation
-#
+# Copyright (c) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
