@@ -413,7 +413,7 @@ export default function Balance({ active }: Props) {
       const priority = rowPriorities[limitDialog.app.app_id] ?? limitDialog.app.priority ?? 'medium'
       const isMultiTarget = limitForm.cgroupIds.length > 1
 
-      if (isMultiTarget) {
+      if (isMultiTarget && !useInlineProcessHint) {
         const selectedTarget = activeLimitTarget || limitForm.cgroupIds[0]
         const form = perTargetForms[selectedTarget] ?? limitForm
         await api.resourceLimit({
