@@ -701,14 +701,11 @@ export default function Balance({ active }: Props) {
       label: procNames.length === cgIds.length ? procNames[i] : cg,
     }))
   }, [limitForm.cgroupIds, limitForm.processNames])
-  const useInlineProcessHint = useMemo(() => {
-    const names = limitForm.processNames.map((name) => name.toLowerCase())
-    return (
-      names.length === 2
-      && names.includes('heliconsearch_agent')
-      && names.includes('vlmservice')
-    )
-  }, [limitForm.processNames])
+  const inlineProcessNames = useMemo(
+    () => limitForm.processNames.map((name) => name.trim()).filter(Boolean),
+    [limitForm.processNames]
+  )
+  const useInlineProcessHint = inlineProcessNames.length > 1
 
   // renderLimitSettings accepts a form snapshot and a typed setter so each
   // context (single-cgroup or per-tab) can be fully independent.
@@ -1097,7 +1094,7 @@ export default function Balance({ active }: Props) {
             )}
             {useInlineProcessHint && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Target Processes: {limitForm.processNames.join(' | ')}
+                Target Processes: {inlineProcessNames.join(' | ')}
               </Text>
             )}
 
