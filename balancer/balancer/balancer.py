@@ -182,7 +182,22 @@ class DynamicBalancer:
     def _run_monitor_resource_loop(self):
         logger.info("Monitor resource service started")
         global g_limited_apps, g_extra_cgroup_ids, is_limited_app_dominant
-        default_idle_check_interval = max(float(getattr(self.config, "monitor_idle_check_interval", 10)), 0.1)
+        _MIN_IDLE_CHECK = 2.0   # seconds – below this polling is too aggressive
+        _MAX_IDLE_CHECK = 30.0  # seconds – above this response latency becomes unacceptable
+        _raw_idle = float(getattr(self.config, "monitor_idle_check_interval", 10))
+        _pressure_update = float(getattr(self.config, "regular_update_sys_pressure_time", 5))
+        # monitor_idle_check_interval must not be shorter than the pressure-data refresh period
+        # to avoid making decisions on stale data, and must stay within [2, 30] seconds.
+        default_idle_check_interval = max(
+            _MIN_IDLE_CHECK,
+            min(_MAX_IDLE_CHECK, max(_raw_idle, _pressure_update))
+        )
+        if default_idle_check_interval != _raw_idle:
+            logger.warning(
+                "monitor_idle_check_interval=%.1fs clamped to %.1fs "
+                "(allowed range [%.0fs, %.0fs], min=regular_update_sys_pressure_time=%.1fs)",
+                _raw_idle, default_idle_check_interval, _MIN_IDLE_CHECK, _MAX_IDLE_CHECK, _pressure_update,
+            )
         idle_check_interval = default_idle_check_interval
         last_check_time = 0
         last_network_sample_time = 0
