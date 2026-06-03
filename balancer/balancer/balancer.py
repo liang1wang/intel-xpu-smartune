@@ -182,7 +182,8 @@ class DynamicBalancer:
     def _run_monitor_resource_loop(self):
         logger.info("Monitor resource service started")
         global g_limited_apps, g_extra_cgroup_ids, is_limited_app_dominant
-        idle_check_interval = 10  # seconds
+        default_idle_check_interval = max(float(getattr(self.config, "monitor_idle_check_interval", 10)), 0.1)
+        idle_check_interval = default_idle_check_interval
         last_check_time = 0
         last_network_sample_time = 0
         network_sample_interval = 5  # network sampling interval (seconds)
@@ -211,7 +212,7 @@ class DynamicBalancer:
             nonlocal top_consume_apps, idle_check_interval, pressure_start_time
             # logger.debug("reset_state called")
             top_consume_apps = []
-            idle_check_interval = 10
+            idle_check_interval = default_idle_check_interval
             pressure_start_time = None  # reset timer
 
         def _cache_top_consumers(apps, threshold, fetched_at=None):
