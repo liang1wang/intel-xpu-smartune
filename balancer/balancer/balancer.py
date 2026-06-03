@@ -349,9 +349,10 @@ class DynamicBalancer:
 
                             if not is_disk_io_stressed:
                                 pressure_start_time = None
-                                top_consume_apps, reach_threshold, fetch_source = _resolve_top_for_critical(current_time)
-                                logger.debug(f"Using top-consumer source={fetch_source} under critical pressure")
-                                _start_top_prefetch(current_time, reason="critical_refresh")
+                                if not top_consume_apps:
+                                    top_consume_apps, reach_threshold, fetch_source = _resolve_top_for_critical(current_time)
+                                    logger.debug(f"Using top-consumer source={fetch_source} under critical pressure")
+                                    _start_top_prefetch(current_time, reason="critical_refresh")
                             else:
                                 disk_io_not_stressed_start_time = None
                                 top_consume_apps = self.resource_monitor.get_top_disk_io_consumers()
