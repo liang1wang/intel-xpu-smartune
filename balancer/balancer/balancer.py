@@ -241,8 +241,13 @@ class DynamicBalancer:
             nonlocal top_prefetch_thread, last_prefetch_trigger_time
             with prefetch_state_lock:
                 if top_prefetch_thread and top_prefetch_thread.is_alive():
+                    logger.debug(f"Skip top consumer prefetch ({reason}): existing prefetch still running")
                     return False
                 if (not force) and (now - last_prefetch_trigger_time < PREFETCH_TRIGGER_COOLDOWN):
+                    logger.debug(
+                        f"Skip top consumer prefetch ({reason}): cooldown active "
+                        f"for {now - last_prefetch_trigger_time:.2f}s"
+                    )
                     return False
                 last_prefetch_trigger_time = now
 
@@ -265,16 +270,27 @@ class DynamicBalancer:
         def _resolve_top_for_critical(now):
             apps, threshold = _get_fresh_cached_top(now)
             if apps:
+                logger.debug(
+                    f"Critical top-consumer resolve hit fresh cache: apps={len(apps)}, "
+                    f"reach_threshold={threshold}"
+                )
                 return apps, threshold, "cache"
 
             _start_top_prefetch(now, force=True, reason="critical")
             with prefetch_state_lock:
                 thread_ref = top_prefetch_thread
             if thread_ref and thread_ref.is_alive():
+                logger.debug(
+                    f"Waiting up to {CRITICAL_PREFETCH_WAIT:.2f}s for critical prefetch to complete"
+                )
                 thread_ref.join(CRITICAL_PREFETCH_WAIT)
 
             apps, threshold = _get_fresh_cached_top(time.time())
             if apps:
+                logger.debug(
+                    f"Critical top-consumer resolve obtained prefetched cache after wait: "
+                    f"apps={len(apps)}, reach_threshold={threshold}"
+                )
                 return apps, threshold, "cache_after_wait"
 
             with prefetch_lock:
@@ -290,6 +306,7 @@ class DynamicBalancer:
 
         def _on_critical_state_changed(is_critical: bool) -> None:
             if is_critical:
+                logger.debug("Critical listener triggered background top-consumer prefetch")
                 _start_top_prefetch(time.time(), force=True, reason="critical_listener")
 
         self.controlManager.register_critical_state_listener(_on_critical_state_changed)
