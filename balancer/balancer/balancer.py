@@ -182,7 +182,23 @@ class DynamicBalancer:
     def _run_monitor_resource_loop(self):
         logger.info("Monitor resource service started")
         global g_limited_apps, g_extra_cgroup_ids, is_limited_app_dominant
-        idle_check_interval = 10  # seconds
+        _MIN_IDLE_CHECK = 2.0   # seconds – below this polling is too aggressive
+        _MAX_IDLE_CHECK = 30.0  # seconds – above this response latency becomes unacceptable
+        _raw_idle = float(getattr(self.config, "monitor_idle_check_interval", 10))
+        _pressure_update = float(getattr(self.config, "regular_update_sys_pressure_time", 5))
+        # monitor_idle_check_interval must not be shorter than the pressure-data refresh period
+        # to avoid making decisions on stale data, and must stay within [2, 30] seconds.
+        default_idle_check_interval = max(
+            _MIN_IDLE_CHECK,
+            min(_MAX_IDLE_CHECK, max(_raw_idle, _pressure_update))
+        )
+        if default_idle_check_interval != _raw_idle:
+            logger.warning(
+                "monitor_idle_check_interval=%.1fs clamped to %.1fs "
+                "(allowed range [%.0fs, %.0fs], min=regular_update_sys_pressure_time=%.1fs)",
+                _raw_idle, default_idle_check_interval, _MIN_IDLE_CHECK, _MAX_IDLE_CHECK, _pressure_update,
+            )
+        idle_check_interval = default_idle_check_interval
         last_check_time = 0
         last_network_sample_time = 0
         network_sample_interval = 5  # network sampling interval (seconds)
@@ -195,13 +211,145 @@ class DynamicBalancer:
         disk_io_not_stressed_start_time = None  # timestamp when disk IO pressure was relieved
         STABLE_DISK_IO_PERIOD = 300  # 5-minute disk IO stability period (seconds)
         policy = self.config.limit_policy['policy']
+        top_consumer_cache = {"apps": [], "reach_threshold": False, "fetched_at": 0.0}
+        last_known_top_consumer = {"apps": [], "reach_threshold": True, "fetched_at": 0.0}
+        prefetch_lock = threading.Lock()
+        prefetch_state_lock = threading.Lock()
+        top_prefetch_thread = None
+        high_pressure_streak = 0
+        last_prefetch_trigger_time = 0.0
+        PREFETCH_CACHE_TTL = 2.0
+        PREFETCH_TRIGGER_COOLDOWN = 2.0
+        HIGH_PREFETCH_STREAK_THRESHOLD = 2
+        CRITICAL_PREFETCH_WAIT = 0.35
+        prev_pressure = None
 
         def reset_state():
             nonlocal top_consume_apps, idle_check_interval, pressure_start_time
             # logger.debug("reset_state called")
             top_consume_apps = []
-            idle_check_interval = 10
+            idle_check_interval = default_idle_check_interval
             pressure_start_time = None  # reset timer
+
+        def _cache_top_consumers(apps, threshold, fetched_at=None):
+            if fetched_at is None:
+                fetched_at = time.time()
+            with prefetch_lock:
+                top_consumer_cache["apps"] = list(apps or [])
+                top_consumer_cache["reach_threshold"] = bool(threshold)
+                top_consumer_cache["fetched_at"] = fetched_at
+                if apps:
+                    last_known_top_consumer["apps"] = list(apps)
+                    last_known_top_consumer["reach_threshold"] = bool(threshold)
+                    last_known_top_consumer["fetched_at"] = fetched_at
+
+        def _get_fresh_cached_top(now):
+            with prefetch_lock:
+                apps = list(top_consumer_cache.get("apps") or [])
+                threshold = bool(top_consumer_cache.get("reach_threshold"))
+                fetched_at = float(top_consumer_cache.get("fetched_at") or 0.0)
+            if apps and (now - fetched_at) <= PREFETCH_CACHE_TTL:
+                return apps, threshold
+            return [], False
+
+        def _get_last_known_top():
+            with prefetch_lock:
+                apps = list(last_known_top_consumer.get("apps") or [])
+                threshold = bool(last_known_top_consumer.get("reach_threshold"))
+                fetched_at = float(last_known_top_consumer.get("fetched_at") or 0.0)
+            return apps, threshold, fetched_at
+
+        def _get_inflight_top_prefetch():
+            with prefetch_state_lock:
+                thread_ref = top_prefetch_thread
+            if thread_ref and thread_ref.is_alive():
+                return thread_ref
+            return None
+
+        def _start_top_prefetch(now, reason=""):
+            nonlocal top_prefetch_thread, last_prefetch_trigger_time
+            cached_apps, _ = _get_fresh_cached_top(now)
+            if cached_apps:
+                logger.debug(f"Skip top consumer prefetch ({reason}): fresh cache still valid")
+                return False, "fresh_cache"
+
+            with prefetch_state_lock:
+                if top_prefetch_thread and top_prefetch_thread.is_alive():
+                    logger.debug(f"Reusing in-flight top consumer fetch ({reason})")
+                    return False, "in_flight"
+                if now - last_prefetch_trigger_time < PREFETCH_TRIGGER_COOLDOWN:
+                    logger.debug(
+                        f"Skip top consumer prefetch ({reason}): cooldown active "
+                        f"for {now - last_prefetch_trigger_time:.2f}s"
+                    )
+                    return False, "cooldown"
+                last_prefetch_trigger_time = now
+
+            def _worker():
+                try:
+                    apps, threshold = self.resource_monitor.get_top_resource_consumers()
+                    _cache_top_consumers(apps, threshold, time.time())
+                    logger.debug(
+                        f"Top consumer prefetch completed ({reason}): apps={len(apps)}, "
+                        f"reach_threshold={threshold}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Top consumer prefetch failed ({reason}): {e}")
+
+            with prefetch_state_lock:
+                top_prefetch_thread = threading.Thread(target=_worker, daemon=True)
+                top_prefetch_thread.start()
+            return True, "started"
+
+        def _maybe_schedule_top_refresh(now, fetch_source):
+            if fetch_source != "stale_fallback":
+                return False
+            started, _ = _start_top_prefetch(now, reason="critical_refresh")
+            return started
+
+        def _resolve_top_for_critical(now):
+            apps, threshold = _get_fresh_cached_top(now)
+            if apps:
+                logger.debug(
+                    f"Critical top-consumer resolve hit fresh cache: apps={len(apps)}, "
+                    f"reach_threshold={threshold}"
+                )
+                return apps, threshold, "cache"
+
+            started, fetch_state = _start_top_prefetch(now, reason="critical")
+            thread_ref = _get_inflight_top_prefetch()
+            if thread_ref and thread_ref.is_alive():
+                logger.debug(
+                    f"Waiting up to {CRITICAL_PREFETCH_WAIT:.2f}s for "
+                    f"{'new' if started else 'existing'} critical top-consumer fetch"
+                )
+                thread_ref.join(CRITICAL_PREFETCH_WAIT)
+
+            apps, threshold = _get_fresh_cached_top(time.time())
+            if apps:
+                logger.debug(
+                    f"Critical top-consumer resolve obtained prefetched cache after wait: "
+                    f"apps={len(apps)}, reach_threshold={threshold}"
+                )
+                return apps, threshold, "cache_after_wait"
+
+            fallback_apps, fallback_threshold, fallback_fetched_at = _get_last_known_top()
+            if fallback_apps:
+                logger.warning(
+                    f"Using stale top-consumer fallback due to cache miss/prefetch timeout; "
+                    f"age={time.time() - fallback_fetched_at:.2f}s"
+                )
+                return fallback_apps, fallback_threshold, "stale_fallback"
+
+            logger.debug(f"Critical top-consumer resolve skipped: no cache available (state={fetch_state})")
+            return [], False, "unavailable"
+
+        def _on_critical_state_changed(is_critical: bool) -> None:
+            if is_critical:
+                logger.debug("Critical listener triggered background top-consumer prefetch")
+                _start_top_prefetch(time.time(), reason="critical_listener")
+
+        self.controlManager.register_critical_state_listener(_on_critical_state_changed)
 
         def handle_network_operations():
             nonlocal last_network_sample_time, current_time
@@ -254,6 +402,13 @@ class DynamicBalancer:
                         is_disk_io_stressed = False
 
                     last_check_time = current_time
+                    rising_to_high = prev_pressure in (None, "low", "medium")
+                    if pressure == "high":
+                        high_pressure_streak += 1
+                        if high_pressure_streak >= HIGH_PREFETCH_STREAK_THRESHOLD or rising_to_high:
+                            _start_top_prefetch(current_time, reason="high")
+                    else:
+                        high_pressure_streak = 0
 
                     if policy == "separated":
                         if pressure == "critical" or is_disk_io_stressed:
@@ -262,7 +417,10 @@ class DynamicBalancer:
 
                             if not is_disk_io_stressed:
                                 pressure_start_time = None
-                                top_consume_apps, reach_threshold = self.resource_monitor.get_top_resource_consumers()
+                                if not top_consume_apps:
+                                    top_consume_apps, reach_threshold, fetch_source = _resolve_top_for_critical(current_time)
+                                    logger.debug(f"Using top-consumer source={fetch_source} under critical pressure")
+                                    _maybe_schedule_top_refresh(current_time, fetch_source)
                             else:
                                 disk_io_not_stressed_start_time = None
                                 top_consume_apps = self.resource_monitor.get_top_disk_io_consumers()
@@ -449,8 +607,9 @@ class DynamicBalancer:
                             # First time entering critical state: obtain the top-app list
                             restore_pending = False
                             if not top_consume_apps:
-                                top_consume_apps, reach_threshold = self.resource_monitor.get_top_resource_consumers()
-                                # logger.debug(f"Top resource consumers(currently = 1): {top_consume_apps}")
+                                top_consume_apps, reach_threshold, fetch_source = _resolve_top_for_critical(current_time)
+                                logger.debug(f"Using top-consumer source={fetch_source} under critical pressure")
+                                _maybe_schedule_top_refresh(current_time, fetch_source)
 
                             if top_consume_apps:
                                 # Check whether this process has already been rate-limited
@@ -732,6 +891,7 @@ class DynamicBalancer:
                                         reset_state()  # reset timer and current pressure state
                                 else:
                                     reset_state()
+                    prev_pressure = pressure
                 handle_network_operations()
                 time.sleep(1)
             except Exception as e:
