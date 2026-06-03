@@ -199,6 +199,7 @@ class DynamicBalancer:
         top_consumer_cache = {"apps": [], "reach_threshold": False, "fetched_at": 0.0}
         last_known_top_consumer = {"apps": [], "reach_threshold": True, "fetched_at": 0.0}
         prefetch_lock = threading.Lock()
+        prefetch_state_lock = threading.Lock()
         top_prefetch_thread = None
         high_pressure_streak = 0
         last_prefetch_trigger_time = 0.0
@@ -238,11 +239,12 @@ class DynamicBalancer:
 
         def _start_top_prefetch(now, force=False, reason=""):
             nonlocal top_prefetch_thread, last_prefetch_trigger_time
-            if top_prefetch_thread and top_prefetch_thread.is_alive():
-                return False
-            if (not force) and (now - last_prefetch_trigger_time < PREFETCH_TRIGGER_COOLDOWN):
-                return False
-            last_prefetch_trigger_time = now
+            with prefetch_state_lock:
+                if top_prefetch_thread and top_prefetch_thread.is_alive():
+                    return False
+                if (not force) and (now - last_prefetch_trigger_time < PREFETCH_TRIGGER_COOLDOWN):
+                    return False
+                last_prefetch_trigger_time = now
 
             def _worker():
                 try:
@@ -255,8 +257,9 @@ class DynamicBalancer:
                 except Exception as e:
                     logger.warning(f"Top consumer prefetch failed ({reason}): {e}")
 
-            top_prefetch_thread = threading.Thread(target=_worker, daemon=True)
-            top_prefetch_thread.start()
+            with prefetch_state_lock:
+                top_prefetch_thread = threading.Thread(target=_worker, daemon=True)
+                top_prefetch_thread.start()
             return True
 
         def _resolve_top_for_critical(now):
@@ -265,7 +268,8 @@ class DynamicBalancer:
                 return apps, threshold, "cache"
 
             _start_top_prefetch(now, force=True, reason="critical")
-            thread_ref = top_prefetch_thread
+            with prefetch_state_lock:
+                thread_ref = top_prefetch_thread
             if thread_ref and thread_ref.is_alive():
                 thread_ref.join(CRITICAL_PREFETCH_WAIT)
 
@@ -283,6 +287,12 @@ class DynamicBalancer:
             apps, threshold = self.resource_monitor.get_top_resource_consumers()
             _cache_top_consumers(apps, threshold, time.time())
             return apps, threshold, "sync"
+
+        def _on_critical_state_changed(is_critical: bool) -> None:
+            if is_critical:
+                _start_top_prefetch(time.time(), force=True, reason="critical_listener")
+
+        self.controlManager.register_critical_state_listener(_on_critical_state_changed)
 
         def handle_network_operations():
             nonlocal last_network_sample_time, current_time
