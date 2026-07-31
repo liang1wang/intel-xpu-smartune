@@ -4,14 +4,13 @@
 
 - PPTX: `/home/runner/work/intel-xpu-smartune/intel-xpu-smartune/docs/presentations/smartune_q3_milestone_slide.pptx`
 
-This slide is a new English single-page SmartTune overview in a more business-oriented, executive-summary style.
+This slide is a new English single-page SmartTune overview styled more like a flashy quarterly business report.
 
 ### Layout focus
 
-- The title and top-right panel present the SmartTune message in an executive-report format.
-- The center dark panel explains what SmartTune is and why it matters to business outcomes.
-- The lower card row highlights operational visibility, automated control, faster enablement, and pilot momentum.
-- The bottom section lists pilot / early-adoption customer names.
+- The overall structure follows a quarterly-report style with a large milestone headline, a right-side hero visual, a dark business-impact panel, KPI-style value cards, and release highlights.
+- The center section explains what SmartTune is, what it does, and why it matters to business outcomes.
+- The bottom band lists pilot / early-adoption customer names.
 
 ### Editable placeholders
 
