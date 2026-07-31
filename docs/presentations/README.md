@@ -4,12 +4,13 @@
 
 - PPTX: `/home/runner/work/intel-xpu-smartune/intel-xpu-smartune/docs/presentations/smartune_q3_milestone_slide.pptx`
 
-This slide is a new English single-page SmartTune overview modeled after the provided milestone reference and tailored to SmartTune.
+This slide is a new English single-page SmartTune overview with an alternate layout, intentionally different from the Houdini reference page.
 
-### Content focus
+### Layout focus
 
-- The center section explains what SmartTune is and what it does as the core optimization layer for Intel® XPU platforms.
-- The bottom section lists pilot / early-adoption customer names.
+- The middle section now uses a hub-and-spoke layout to explain what SmartTune is and what it does.
+- The workflow is presented as three connected stages: Observe, Optimize, and Protect.
+- The bottom band lists pilot / early-adoption customer names.
 
 ### Editable placeholders
 
@@ -19,3 +20,4 @@ The current customer names are placeholders and can be replaced directly in Powe
 - NovaEdge Systems
 - BlueMesa Robotics
 - VertexVision
+- Orion Compute
