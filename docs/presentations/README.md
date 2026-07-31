@@ -4,13 +4,14 @@
 
 - PPTX: `/home/runner/work/intel-xpu-smartune/intel-xpu-smartune/docs/presentations/smartune_q3_milestone_slide.pptx`
 
-This slide is a new English single-page SmartTune overview with an alternate layout, intentionally different from the Houdini reference page.
+This slide is a new English single-page SmartTune overview in a more business-oriented, executive-summary style.
 
 ### Layout focus
 
-- The middle section now uses a hub-and-spoke layout to explain what SmartTune is and what it does.
-- The workflow is presented as three connected stages: Observe, Optimize, and Protect.
-- The bottom band lists pilot / early-adoption customer names.
+- The title and top-right panel present the SmartTune message in an executive-report format.
+- The center dark panel explains what SmartTune is and why it matters to business outcomes.
+- The lower card row highlights operational visibility, automated control, faster enablement, and pilot momentum.
+- The bottom section lists pilot / early-adoption customer names.
 
 ### Editable placeholders
 
