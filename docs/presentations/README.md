@@ -14,10 +14,12 @@ This slide is a new English single-page SmartTune overview styled more like a fl
 
 ### Editable placeholders
 
-The current customer names are placeholders and can be replaced directly in PowerPoint:
+The bottom customer row currently uses these entries:
 
-- AsterAI
-- NovaEdge Systems
-- BlueMesa Robotics
-- VertexVision
-- Orion Compute
+- 铁威马 (TerraMaster)
+- 海高特 (AWOL)
+- 联想
+- 畅网
+- 威联通 (QNAP)
+- nimo
+- geakos
